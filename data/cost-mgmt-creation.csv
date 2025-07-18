@@ -1,0 +1,12 @@
+FXGainLoss,PnlCalculated,CostAllocationStatus,ExpenseApprovalStatus,CostBookedDate,CommissionAmount,CommissionCurrency,BrokerageFee,BrokerageCurrency
+-4783.35,-7541.58,Failed,Rejected,5/31/2025,701.09,CHF,307.57,CHF
+-1587.58,-1477.41,Allocated,Rejected,06-03-2025,463.81,CHF,78.83,CHF
+179.9,-2476.06,Failed,Under Review,06-02-2025,996.49,USD,96.97,USD
+-4894.43,-5282.09,Allocated,Under Review,5/24/2025,840.23,USD,488.65,USD
+4458.74,9068.05,Pending,Under Review,5/13/2025,218.27,USD,482.44,USD
+1836,-9529.88,Failed,Rejected,06-08-2025,836.84,USD,387.09,USD
+-1501.39,-1399.27,Pending,Under Review,05-12-2025,765.49,USD,272.8,USD
+223.31,-8693.08,Pending,Approved,5/19/2025,572.74,USD,202.57,USD
+3335.58,-9125.16,Allocated,Rejected,5/22/2025,921.02,USD,61.87,USD
+-3353.42,-1516.87,Failed,Approved,5/19/2025,777.69,CHF,301.56,CHF
+-2205.69,768.3,Failed,Under Review,5/23/2025,567.37,JPY,156.59,JPY
