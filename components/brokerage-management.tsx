@@ -1,8 +1,6 @@
 "use client"
 
-import type React from "react"
-
-import { useState, useCallback, useEffect } from "react"
+import React, { useState, useCallback, useEffect, useRef, useMemo } from "react"
 import {
   Upload,
   FileSpreadsheet,
@@ -14,10 +12,12 @@ import {
   Building2,
   TrendingUp,
 } from "lucide-react"
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from 'recharts'
 import { analyzeExcelData, mapExcelToTradeData, type ExcelAnalysis } from "@/lib/excel-processor"
 import type { TradeData } from "@/lib/data-processor"
 import * as XLSX from "xlsx"
 import { useFirebase } from "@/hooks/use-firebase";
+import { tradeOperations } from "@/lib/firebase-operations";
 
 type BrokerageManagementProps = {}
 
@@ -139,26 +139,56 @@ function BrokerageDataUpload({
   const [rawData, setRawData] = useState<any[]>([])
   const [dataType, setDataType] = useState<"equity" | "fx">("equity")
   const [error, setError] = useState<string | null>(null)
+  const [uploadingAsIs, setUploadingAsIs] = useState(false)
+  const [uploadAsIsSuccess, setUploadAsIsSuccess] = useState(false)
   const { trades: firebaseTrades, loadTrades, loading: firebaseLoading, createTrade } = useFirebase();
+  const dataTypeRef = useRef(dataType);
+  React.useEffect(() => { dataTypeRef.current = dataType }, [dataType]);
 
   // Handler for sourcing data from Firebase
   const handleSourceFromFirebase = async () => {
     await loadTrades();
+    const currentType = dataTypeRef.current;
     const detectedType =
       firebaseTrades.length > 0 && firebaseTrades[0].data_source
         ? (firebaseTrades[0].data_source as "equity" | "fx")
-        : "equity";
+        : currentType;
     // Add fallback for data_source in case it's missing
     const tradesWithType = firebaseTrades.map(t => ({ ...t, data_source: t.data_source || detectedType }));
-    onDataLoaded(tradesWithType as any, tradesWithType as any, detectedType);
+    setRawData(tradesWithType);
+    // Generate headers from the first row
+    const headers = tradesWithType.length > 0 ? Object.keys(tradesWithType[0]) : [];
+    const analysisResult = { headers };
+    setAnalysis(analysisResult as any);
+    // Use the latest dataType selection for mapping
+    const fields = currentType === "fx" ? fxFields : equityFields;
+    const autoMapping = createExactMapping(fields, headers);
+    setFieldMapping(autoMapping);
+    setDataType(currentType);
+    setStep("map");
   };
 
   // When processing uploaded data, also save to Firestore
   const handleProcessData = async (parsedData: TradeData[], rawData: any[], detectedType: "equity" | "fx") => {
-    for (const trade of parsedData) {
-      await createTrade({ ...trade, data_source: detectedType } as any); // Save each trade to Firestore with data_source
-    }
+    // Only process data locally, do not upload to Firebase
     onDataLoaded(parsedData.map(t => ({ ...t, data_source: detectedType })), rawData, detectedType);
+  };
+
+  // Add handler for uploading raw data as-is
+  const handleUploadAsIs = async () => {
+    if (!rawData.length) return;
+    setUploadingAsIs(true);
+    setUploadAsIsSuccess(false);
+    try {
+      for (const row of rawData) {
+        await import("@/lib/firebase-operations").then(mod => mod.tradeOperations.createTrade(row));
+      }
+      setUploadAsIsSuccess(true);
+    } catch (e) {
+      setError('Error uploading raw data as-is.');
+      setUploadAsIsSuccess(false);
+    }
+    setUploadingAsIs(false);
   };
 
   // Define field groups for both equity and FX trades
@@ -548,13 +578,14 @@ function BrokerageDataUpload({
   }
 
   if (step === "map") {
+    const mappingFields = dataType === 'fx' ? fxFields : equityFields;
     return (
       <div className="p-8">
         <div className="max-w-6xl mx-auto">
           <div className="text-center mb-8">
             <h2 className="text-4xl font-bold text-gray-900 dark:text-white mb-4">Field Mapping</h2>
             <p className="text-xl text-gray-600 dark:text-gray-400">
-              {dataType.toUpperCase()} - {tradeFields.length} fields
+              {dataType.toUpperCase()} TRADES - {mappingFields.length} fields
             </p>
           </div>
 
@@ -572,12 +603,24 @@ function BrokerageDataUpload({
               <div>
                 <h3 className="text-2xl font-semibold text-gray-900 dark:text-white">Field Mapping</h3>
                 <p className="text-gray-600 dark:text-gray-400 mt-1">
-                  {Object.keys(fieldMapping).length} of {tradeFields.length} fields mapped
+                  {Object.keys(fieldMapping).length} of {mappingFields.length} fields mapped
                 </p>
               </div>
+              <div className="flex gap-2">
               <button onClick={() => setStep("upload")} className="btn-secondary">
                 Back to Upload
               </button>
+                <button
+                  onClick={() => {
+                    const headers = analysis?.headers || [];
+                    const autoMapping = createExactMapping(mappingFields, headers);
+                    setFieldMapping(autoMapping);
+                  }}
+                  className="btn-primary"
+                >
+                  Auto-map Fields
+                </button>
+              </div>
             </div>
 
             <div className="overflow-auto max-h-96 rounded-lg border border-gray-200 dark:border-gray-600">
@@ -596,7 +639,7 @@ function BrokerageDataUpload({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                  {tradeFields.map((field) => (
+                  {mappingFields.map((field) => (
                     <tr key={field.key} className="hover:bg-gray-50 dark:hover:bg-gray-700">
                       <td className="px-6 py-4 text-sm font-medium text-gray-900 dark:text-gray-100">{field.label}</td>
                       <td className="px-6 py-4">
@@ -631,7 +674,15 @@ function BrokerageDataUpload({
             </div>
           </div>
 
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-4">
+            <button
+              onClick={handleUploadAsIs}
+              className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md text-sm font-medium"
+              disabled={uploadingAsIs || !rawData.length}
+            >
+              {uploadingAsIs ? "Uploading..." : "Upload as-is to Firebase"}
+            </button>
+            {uploadAsIsSuccess && <span className="text-green-600 text-sm ml-2">Upload successful!</span>}
             <button
               onClick={processData}
               disabled={loading}
@@ -676,6 +727,10 @@ function BrokerageManagementContent({
   const [selectedColumns, setSelectedColumns] = useState<string[]>([])
   const [availableColumns, setAvailableColumns] = useState<string[]>([])
   const [tableData, setTableData] = useState<any[]>([])
+  const [editingCell, setEditingCell] = useState<{ row: number; col: string } | null>(null)
+  const [editValue, setEditValue] = useState<string>("")
+  const [savingCell, setSavingCell] = useState<{ row: number; col: string } | null>(null)
+  const [columnSearchQuery, setColumnSearchQuery] = useState<string>("")
 
   // Add pagination state after the existing state variables:
   const [currentPage, setCurrentPage] = useState<string>("1-50")
@@ -710,11 +765,29 @@ function BrokerageManagementContent({
         selectedColumns.forEach((col) => {
           row[col] = (trade as any)[col] || ""
         })
+        row.id = (trade as any).id // Attach id for update
         return row
       })
       setTableData(data)
     }
   }, [trades, selectedColumns])
+
+  // Handle cell edit
+  const handleCellEdit = (rowIdx: number, col: string, value: string) => {
+    setSavingCell({ row: rowIdx, col })
+    const row = tableData[rowIdx]
+    const id = row.id
+    if (!id) return
+    // Update local state optimistically
+    setTableData(prev => prev.map((r, i) => i === rowIdx ? { ...r, [col]: value } : r))
+    tradeOperations.updateTrade(id, { [col]: value })
+      .catch(() => {
+        // Optionally handle error, revert value if needed
+      })
+      .finally(() => {
+        setSavingCell(null)
+      })
+  }
 
   const handleColumnChange = (column: string, isSelected: boolean) => {
     if (isSelected && selectedColumns.length < 9) {
@@ -732,6 +805,11 @@ function BrokerageManagementContent({
     const defaultColumns = availableColumns.slice(0, 9)
     setSelectedColumns(defaultColumns)
   }
+
+  // Filter columns based on search query
+  const filteredColumns = availableColumns.filter(column =>
+    column.toLowerCase().includes(columnSearchQuery.toLowerCase())
+  )
 
   if (trades.length === 0) {
     return (
@@ -756,19 +834,52 @@ function BrokerageManagementContent({
           {availableColumns.length} columns available
         </p>
 
-        {/* Control Buttons */}
-        <div className="flex space-x-4 mb-6">
-          <button onClick={clearAllColumns} className="btn-secondary">
-            Clear All
-          </button>
-          <button onClick={selectDefaultColumns} className="btn-primary">
-            Select Default (First 9)
-          </button>
+        {/* Control Buttons and Search */}
+        <div className="flex flex-col sm:flex-row gap-4 mb-6">
+          <div className="flex space-x-4">
+            <button onClick={clearAllColumns} className="btn-secondary">
+              Clear All
+            </button>
+            <button onClick={selectDefaultColumns} className="btn-primary">
+              Select Default (First 9)
+            </button>
+          </div>
+          <div className="flex-1 max-w-md">
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Search columns..."
+                value={columnSearchQuery}
+                onChange={(e) => setColumnSearchQuery(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-black focus:border-black placeholder-gray-500 dark:placeholder-gray-400"
+              />
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <svg className="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              {columnSearchQuery && (
+                <button
+                  onClick={() => setColumnSearchQuery("")}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                >
+                  <svg className="h-4 w-4 text-gray-400 hover:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+            {columnSearchQuery && (
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Showing {filteredColumns.length} of {availableColumns.length} columns
+              </p>
+            )}
+          </div>
         </div>
 
         {/* Column Selection Grid */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {availableColumns.map((column) => {
+          {filteredColumns.map((column) => {
             const isSelected = selectedColumns.includes(column)
             const canSelect = selectedColumns.length < 9 || isSelected
 
@@ -801,6 +912,15 @@ function BrokerageManagementContent({
             )
           })}
         </div>
+
+        {/* No results message */}
+        {columnSearchQuery && filteredColumns.length === 0 && (
+          <div className="text-center py-8">
+            <p className="text-gray-500 dark:text-gray-400">
+              No columns found matching "{columnSearchQuery}"
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Data Table */}
@@ -830,7 +950,6 @@ function BrokerageManagementContent({
               </div>
             </div>
           </div>
-
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead className="bg-gray-50 dark:bg-gray-700">
@@ -851,17 +970,53 @@ function BrokerageManagementContent({
                   const startIndex = currentOption?.start || 0
                   const endIndex = currentOption?.end || 50
                   const paginatedData = tableData.slice(startIndex, endIndex)
-
                   return paginatedData.map((row, index) => (
                     <tr key={index} className="hover:bg-gray-50 dark:hover:bg-gray-700">
-                      {selectedColumns.map((column) => (
+                      {selectedColumns.map((column) => {
+                        const isEditing = editingCell && editingCell.row === startIndex + index && editingCell.col === column
+                        const isSaving = savingCell && savingCell.row === startIndex + index && savingCell.col === column
+                        return (
                         <td
                           key={column}
                           className="px-6 py-4 text-sm text-gray-900 dark:text-gray-100 border-r border-gray-200 dark:border-gray-600 last:border-r-0"
-                        >
-                          {formatDate(row[column]) || "-"}
+                            onClick={() => {
+                              if (!isEditing && !isSaving) {
+                                setEditingCell({ row: startIndex + index, col: column })
+                                setEditValue(row[column] ?? "")
+                              }
+                            }}
+                          >
+                            {isEditing ? (
+                              <input
+                                className="w-full bg-white dark:bg-gray-800 border border-blue-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                value={editValue}
+                                autoFocus
+                                onChange={e => setEditValue(e.target.value)}
+                                onBlur={() => {
+                                  setEditingCell(null)
+                                  if (editValue !== row[column]) {
+                                    handleCellEdit(startIndex + index, column, editValue)
+                                  }
+                                }}
+                                onKeyDown={e => {
+                                  if (e.key === "Enter") {
+                                    setEditingCell(null)
+                                    if (editValue !== row[column]) {
+                                      handleCellEdit(startIndex + index, column, editValue)
+                                    }
+                                  } else if (e.key === "Escape") {
+                                    setEditingCell(null)
+                                  }
+                                }}
+                              />
+                            ) : isSaving ? (
+                              <span className="text-blue-500 text-xs">Saving...</span>
+                            ) : (
+                              row[column] || "-"
+                            )}
                         </td>
-                      ))}
+                        )
+                      })}
                     </tr>
                   ))
                 })()}
@@ -1378,15 +1533,442 @@ function BrokerageVisualisations({
       ) : (
         <div className="space-y-8">
           {/* KRI Placeholder */}
-          <div className="card-bw p-12 text-center">
-            <div className="p-4 bg-gray-100 dark:bg-gray-700 rounded-full w-fit mx-auto mb-6">
-              <AlertCircle className="h-16 w-16 text-gray-400" />
+                  <div className="space-y-8">
+          {/* KRI: Counterparty Trade Concentration */}
+          <div className="card-bw p-6 relative flex flex-col gap-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white">1. KRI: Counterparty Trade Concentration</h3>
             </div>
-            <h3 className="text-2xl font-semibold text-gray-900 dark:text-white mb-3">KRIs Coming Soon</h3>
-            <p className="text-gray-600 dark:text-gray-400">Key Risk Indicators will be available in the next update</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+              <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg min-h-16">
+                <p className="text-xs text-blue-600 dark:text-blue-400 font-medium mb-1">Total Counterparties</p>
+                <p className="text-lg font-bold text-blue-700 dark:text-blue-300">
+                  {new Set(trades.map(t => t.counterparty || 'Unknown')).size}
+                </p>
+              </div>
+              <div className="bg-green-50 dark:bg-green-900/20 p-4 rounded-lg min-h-16">
+                <p className="text-xs text-green-600 dark:text-green-400 font-medium mb-1">Total Trades</p>
+                <p className="text-lg font-bold text-green-700 dark:text-green-300">{trades.length}</p>
+              </div>
+              <div className="bg-orange-50 dark:bg-orange-900/20 p-4 rounded-lg min-h-16">
+                <p className="text-xs text-orange-600 dark:text-orange-400 font-medium mb-1">Top 3 Concentration</p>
+                <p className="text-lg font-bold text-orange-700 dark:text-orange-300">
+                  {(() => {
+                    const counterpartyCounts = trades.reduce((acc: { [key: string]: number }, trade) => {
+                      const cp = trade.counterparty || 'Unknown'
+                      acc[cp] = (acc[cp] || 0) + 1
+                      return acc
+                    }, {})
+                    const top3 = Object.values(counterpartyCounts).sort((a, b) => b - a).slice(0, 3).reduce((sum, count) => sum + count, 0)
+                    return trades.length > 0 ? `${((top3 / trades.length) * 100).toFixed(1)}%` : '0%'
+                  })()}
+                </p>
+              </div>
+            </div>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              <strong>Insight:</strong> Detects over-reliance on a few counterparties, increasing concentration risk.
+            </p>
+            <div className="w-full min-h-[20rem]">
+              <CounterpartyConcentrationChart trades={trades} />
+            </div>
+            <p className="text-xs text-gray-500 mt-6 italic">
+              Cursor Hint: group by counterparty, count tradeId
+            </p>
+          </div>
+
+          {/* KRI: Aged Trades (T+ Failures or Delays) */}
+          <div className="card-bw p-6 relative flex flex-col gap-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white">3. KRI: Aged Trades (T+ Failures or Delays)</h3>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+              <div className="bg-yellow-50 dark:bg-yellow-900/20 p-4 rounded-lg min-h-16">
+                <p className="text-xs text-yellow-600 dark:text-yellow-400 font-medium mb-1">Pending Trades</p>
+                <p className="text-lg font-bold text-yellow-700 dark:text-yellow-300">
+                  {trades.filter(t => (t.tradeStatus || t.status || '').toLowerCase().includes('pending')).length}
+                </p>
+              </div>
+              <div className="bg-red-50 dark:bg-red-900/20 p-4 rounded-lg min-h-16">
+                <p className="text-xs text-red-600 dark:text-red-400 font-medium mb-1">Failed Trades</p>
+                <p className="text-lg font-bold text-red-700 dark:text-red-300">
+                  {trades.filter(t => (t.tradeStatus || t.status || '').toLowerCase().includes('failed')).length}
+                </p>
+              </div>
+              <div className="bg-emerald-50 dark:bg-emerald-900/20 p-4 rounded-lg min-h-16">
+                <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium mb-1">Settlement Rate</p>
+                <p className="text-lg font-bold text-emerald-700 dark:text-emerald-300">
+                  {(() => {
+                    const settled = trades.filter(t => (t.tradeStatus || t.status || '').toLowerCase().includes('settled')).length
+                    return trades.length > 0 ? `${((settled / trades.length) * 100).toFixed(1)}%` : '0%'
+                  })()}
+                </p>
+              </div>
+            </div>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              <strong>Insight:</strong> Shows settlement delays or processing risk.
+            </p>
+            <div className="w-full min-h-[20rem]">
+              <AgedTradesChart trades={trades} />
+            </div>
+            <p className="text-xs text-gray-500 mt-6 italic">
+              Cursor Hint: group by tradeDate and tradeStatus
+            </p>
+          </div>
+
+          {/* KRI: Client Trade Concentration */}
+          <div className="card-bw p-6 relative flex flex-col gap-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white">4. KRI: Client Trade Concentration</h3>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+              <div className="bg-cyan-50 dark:bg-cyan-900/20 p-4 rounded-lg min-h-16">
+                <p className="text-xs text-cyan-600 dark:text-cyan-400 font-medium mb-1">Total Clients</p>
+                <p className="text-lg font-bold text-cyan-700 dark:text-cyan-300">
+                  {new Set(trades.map(t => t.clientId || t.accountId || t.client || 'Unknown')).size}
+                </p>
+              </div>
+              <div className="bg-pink-50 dark:bg-pink-900/20 p-4 rounded-lg min-h-16">
+                <p className="text-xs text-pink-600 dark:text-pink-400 font-medium mb-1">Total Volume</p>
+                <p className="text-lg font-bold text-pink-700 dark:text-pink-300">
+                  ${(() => {
+                    const totalVolume = trades.reduce((sum, t) => {
+                      const volume = parseFloat(t.notionalAmount || t.tradeAmount || '0') || 0
+                      return sum + volume
+                    }, 0)
+                    return (totalVolume / 1000000).toFixed(1)
+                  })()}M
+                </p>
+              </div>
+              <div className="bg-violet-50 dark:bg-violet-900/20 p-4 rounded-lg min-h-16">
+                <p className="text-xs text-violet-600 dark:text-violet-400 font-medium mb-1">Top Client Share</p>
+                <p className="text-lg font-bold text-violet-700 dark:text-violet-300">
+                  {(() => {
+                    const clientVolumes = trades.reduce((acc: { [key: string]: number }, trade) => {
+                      const client = trade.clientId || trade.accountId || trade.client || 'Unknown'
+                      const volume = parseFloat(trade.notionalAmount || trade.tradeAmount || '0') || 0
+                      acc[client] = (acc[client] || 0) + volume
+                      return acc
+                    }, {})
+                    const totalVolume = Object.values(clientVolumes).reduce((sum, vol) => sum + vol, 0)
+                    const maxVolume = Math.max(...Object.values(clientVolumes), 0)
+                    return totalVolume > 0 ? `${((maxVolume / totalVolume) * 100).toFixed(1)}%` : '0%'
+                  })()}
+                </p>
+              </div>
+            </div>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              <strong>Insight:</strong> Identifies operational dependency on a few high-volume clients.
+            </p>
+            <div className="w-full min-h-[20rem]">
+              <ClientConcentrationChart trades={trades} />
+            </div>
+            <p className="text-xs text-gray-500 mt-6 italic">
+              Cursor Hint: group by client/account, sum volume or count tradeId
+            </p>
           </div>
         </div>
+        </div>
       )}
+    </div>
+  )
+}
+
+// KRI Chart Components
+function CounterpartyConcentrationChart({ trades }: { trades: TradeData[] }) {
+  const [viewMode, setViewMode] = useState<'table' | 'chart'>('table')
+  
+  const data = useMemo(() => {
+    const counterpartyCount: { [key: string]: number } = {}
+    trades.forEach(trade => {
+      const counterparty = trade.counterparty || 'Unknown'
+      counterpartyCount[counterparty] = (counterpartyCount[counterparty] || 0) + 1
+    })
+    
+    return Object.entries(counterpartyCount)
+      .map(([counterparty, count]) => ({ counterparty, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10) // Top 10 counterparties
+  }, [trades])
+
+  if (viewMode === 'table') {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <h4 className="text-lg font-semibold">Counterparty Trade Concentration - Data Table</h4>
+          <button 
+            onClick={() => setViewMode('chart')}
+            className="btn-primary"
+          >
+            📊 View Chart
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full border border-gray-300">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-2 border-b text-left font-semibold">Rank</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">Counterparty</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">Trade Count</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">% of Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((item, index) => {
+                const percentage = ((item.count / trades.length) * 100).toFixed(1)
+                return (
+                  <tr key={item.counterparty} className="hover:bg-gray-50">
+                    <td className="px-4 py-2 border-b">{index + 1}</td>
+                    <td className="px-4 py-2 border-b font-medium">{item.counterparty}</td>
+                    <td className="px-4 py-2 border-b">{item.count}</td>
+                    <td className="px-4 py-2 border-b">{percentage}%</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h4 className="text-lg font-semibold">Counterparty Trade Concentration - Chart View</h4>
+        <button 
+          onClick={() => setViewMode('table')}
+          className="btn-secondary"
+        >
+          📋 Back to Table
+        </button>
+      </div>
+      <ResponsiveContainer width="100%" height={300}>
+        <BarChart layout="horizontal" data={data}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis type="number" />
+          <YAxis dataKey="counterparty" type="category" width={100} />
+          <Tooltip />
+          <Legend />
+          <Bar dataKey="count" fill="#ef4444" name="Trade Count" />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+function AgedTradesChart({ trades }: { trades: TradeData[] }) {
+  const [viewMode, setViewMode] = useState<'table' | 'chart'>('table')
+  
+  const data = useMemo(() => {
+    const dateStatusCount: { [key: string]: { Pending: number, Settled: number, Failed: number } } = {}
+    
+    trades.forEach(trade => {
+      try {
+        const tradeDate = trade.tradeDate || trade.timestamp || new Date().toISOString()
+        const dateObj = new Date(tradeDate)
+        if (!isNaN(dateObj.getTime())) {
+          const date = dateObj.toISOString().split('T')[0]
+          const status = trade.tradeStatus || trade.status || 'Pending'
+          
+          if (!dateStatusCount[date]) {
+            dateStatusCount[date] = { Pending: 0, Settled: 0, Failed: 0 }
+          }
+          
+          if (status.toLowerCase().includes('settled')) {
+            dateStatusCount[date].Settled++
+          } else if (status.toLowerCase().includes('failed')) {
+            dateStatusCount[date].Failed++
+          } else {
+            dateStatusCount[date].Pending++
+          }
+        }
+      } catch (error) {
+        // Skip invalid dates
+      }
+    })
+    
+    return Object.entries(dateStatusCount)
+      .map(([date, statuses]) => ({ date, ...statuses }))
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .slice(-30) // Last 30 days
+  }, [trades])
+
+  if (viewMode === 'table') {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <h4 className="text-lg font-semibold">Aged Trades (T+ Failures/Delays) - Data Table</h4>
+          <button 
+            onClick={() => setViewMode('chart')}
+            className="btn-primary"
+          >
+            📊 View Chart
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full border border-gray-300">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-2 border-b text-left font-semibold">Date</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">Pending</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">Settled</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">Failed</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((item) => {
+                const total = item.Pending + item.Settled + item.Failed
+                return (
+                  <tr key={item.date} className="hover:bg-gray-50">
+                    <td className="px-4 py-2 border-b font-medium">{item.date}</td>
+                    <td className="px-4 py-2 border-b text-yellow-600">{item.Pending}</td>
+                    <td className="px-4 py-2 border-b text-green-600">{item.Settled}</td>
+                    <td className="px-4 py-2 border-b text-red-600">{item.Failed}</td>
+                    <td className="px-4 py-2 border-b font-semibold">{total}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h4 className="text-lg font-semibold">Aged Trades (T+ Failures/Delays) - Chart View</h4>
+        <button 
+          onClick={() => setViewMode('table')}
+          className="btn-secondary"
+        >
+          📋 Back to Table
+        </button>
+      </div>
+      <ResponsiveContainer width="100%" height={300}>
+        <BarChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="date" />
+          <YAxis />
+          <Tooltip />
+          <Legend />
+          <Bar dataKey="Pending" stackId="a" fill="#fbbf24" name="Pending" />
+          <Bar dataKey="Settled" stackId="a" fill="#10b981" name="Settled" />
+          <Bar dataKey="Failed" stackId="a" fill="#ef4444" name="Failed" />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+function ClientConcentrationChart({ trades }: { trades: TradeData[] }) {
+  const [viewMode, setViewMode] = useState<'table' | 'chart'>('table')
+  
+  const data = useMemo(() => {
+    const clientData: { [key: string]: { count: number, volume: number } } = {}
+    
+    trades.forEach(trade => {
+      try {
+        const client = trade.clientId || trade.accountId || trade.client || 'Unknown'
+        const volumeStr = trade.notionalAmount || trade.tradeAmount || '0'
+        const volume = parseFloat(volumeStr) || 0
+        
+        if (!clientData[client]) {
+          clientData[client] = { count: 0, volume: 0 }
+        }
+        
+        clientData[client].count++
+        clientData[client].volume += volume
+      } catch (error) {
+        // Skip invalid entries
+      }
+    })
+    
+    return Object.entries(clientData)
+      .map(([client, data]) => ({ 
+        client, 
+        count: data.count, 
+        volume: data.volume,
+        volumeFormatted: (data.volume / 1000000).toFixed(2) // In millions
+      }))
+      .sort((a, b) => b.volume - a.volume)
+      .slice(0, 15) // Top 15 clients
+  }, [trades])
+
+  if (viewMode === 'table') {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <h4 className="text-lg font-semibold">Client Trade Concentration - Data Table</h4>
+          <button 
+            onClick={() => setViewMode('chart')}
+            className="btn-primary"
+          >
+            📊 View Chart
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full border border-gray-300">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-2 border-b text-left font-semibold">Rank</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">Client</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">Trade Count</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">Volume ($M)</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">% of Total Volume</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((item, index) => {
+                const totalVolume = data.reduce((sum, d) => sum + d.volume, 0)
+                const volumePercentage = totalVolume > 0 ? ((item.volume / totalVolume) * 100).toFixed(1) : '0.0'
+                return (
+                  <tr key={item.client} className="hover:bg-gray-50">
+                    <td className="px-4 py-2 border-b">{index + 1}</td>
+                    <td className="px-4 py-2 border-b font-medium">{item.client}</td>
+                    <td className="px-4 py-2 border-b">{item.count}</td>
+                    <td className="px-4 py-2 border-b">${item.volumeFormatted}M</td>
+                    <td className="px-4 py-2 border-b">{volumePercentage}%</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h4 className="text-lg font-semibold">Client Trade Concentration - Chart View</h4>
+        <button 
+          onClick={() => setViewMode('table')}
+          className="btn-secondary"
+        >
+          📋 Back to Table
+        </button>
+      </div>
+      <ResponsiveContainer width="100%" height={300}>
+        <BarChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="client" angle={-45} textAnchor="end" height={100} />
+          <YAxis />
+          <Tooltip formatter={(value, name) => [
+            name === 'count' ? value : `$${value}M`,
+            name === 'count' ? 'Trade Count' : 'Volume (Millions)'
+          ]} />
+          <Legend />
+          <Bar dataKey="count" fill="#3b82f6" name="Trade Count" />
+          <Bar dataKey="volumeFormatted" fill="#ef4444" name="Volume (Millions)" />
+        </BarChart>
+      </ResponsiveContainer>
     </div>
   )
 }

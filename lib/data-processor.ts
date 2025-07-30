@@ -1,6 +1,6 @@
 "use client"
 
-export interface TradeData {
+export type TradeData = {
   // Common fields for both equity and FX trades
   tradeId: string
   orderId?: string
@@ -88,7 +88,9 @@ export interface TradeData {
   // Metadata
   tradeType_original?: string // To store original value before normalization
   dataSource?: string // To track if it's from equity or FX dataset
-}
+} & {
+  [key: string]: any;
+};
 
 export function parseCSVData(csvText: string, dataType: "equity" | "fx" = "equity"): TradeData[] {
   const lines = csvText.split("\n")

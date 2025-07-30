@@ -109,7 +109,7 @@ export const tradeOperations = {
   // Get all trades
   async getAllTrades(): Promise<Trade[]> {
     try {
-      const querySnapshot = await getDocs(collection(db, 'trades'));
+      const querySnapshot = await getDocs(collection(db, 'unified_data'));
       return querySnapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
@@ -123,7 +123,7 @@ export const tradeOperations = {
   // Get trade by ID
   async getTradeById(id: string): Promise<Trade | null> {
     try {
-      const docRef = doc(db, 'trades', id);
+      const docRef = doc(db, 'unified_data', id);
       const docSnap = await getDoc(docRef);
       
       if (docSnap.exists()) {
@@ -140,7 +140,7 @@ export const tradeOperations = {
   // Create new trade
   async createTrade(tradeData: Omit<Trade, 'id' | 'created_at' | 'updated_at'>): Promise<string> {
     try {
-      const docRef = await addDoc(collection(db, 'trades'), {
+      const docRef = await addDoc(collection(db, 'unified_data'), {
         ...tradeData,
         created_at: serverTimestamp(),
         updated_at: serverTimestamp()
@@ -155,7 +155,7 @@ export const tradeOperations = {
   // Update trade
   async updateTrade(id: string, tradeData: Partial<Trade>): Promise<void> {
     try {
-      const docRef = doc(db, 'trades', id);
+      const docRef = doc(db, 'unified_data', id);
       await updateDoc(docRef, {
         ...tradeData,
         updated_at: serverTimestamp()
@@ -169,7 +169,7 @@ export const tradeOperations = {
   // Delete trade
   async deleteTrade(id: string): Promise<void> {
     try {
-      const docRef = doc(db, 'trades', id);
+      const docRef = doc(db, 'unified_data', id);
       await deleteDoc(docRef);
     } catch (error) {
       console.error('Error deleting trade:', error);
@@ -178,19 +178,89 @@ export const tradeOperations = {
   },
 
   // Get trades by data source
-  async getTradesByDataSource(dataSource: "equity" | "fx"): Promise<Trade[]> {
+  async getTradesByDataSource(_dataSource: "equity" | "fx"): Promise<Trade[]> {
     try {
-      const q = query(
-        collection(db, 'trades'),
-        where('data_source', '==', dataSource)
-      );
-      const querySnapshot = await getDocs(q);
+      const querySnapshot = await getDocs(collection(db, 'unified_data'));
       return querySnapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       })) as Trade[];
     } catch (error) {
-      console.error('Error getting trades by data source:', error);
+      console.error('Error getting trades:', error);
+      throw error;
+    }
+  }
+};
+
+// Communication Operations (for Internal Messaging System)
+export const communicationOperations = {
+  // Get all communications
+  async getAllCommunications(): Promise<any[]> {
+    try {
+      const querySnapshot = await getDocs(collection(db, 'communications'));
+      return querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+    } catch (error) {
+      console.error('Error getting communications:', error);
+      throw error;
+    }
+  },
+
+  // Get communication by ID
+  async getCommunicationById(id: string): Promise<any | null> {
+    try {
+      const docRef = doc(db, 'communications', id);
+      const docSnap = await getDoc(docRef);
+      
+      if (docSnap.exists()) {
+        return { id: docSnap.id, ...docSnap.data() };
+      } else {
+        return null;
+      }
+    } catch (error) {
+      console.error('Error getting communication:', error);
+      throw error;
+    }
+  },
+
+  // Create new communication
+  async createCommunication(communicationData: any): Promise<string> {
+    try {
+      const docRef = await addDoc(collection(db, 'communications'), {
+        ...communicationData,
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+      return docRef.id;
+    } catch (error) {
+      console.error('Error creating communication:', error);
+      throw error;
+    }
+  },
+
+  // Update communication
+  async updateCommunication(id: string, communicationData: any): Promise<void> {
+    try {
+      const docRef = doc(db, 'communications', id);
+      await updateDoc(docRef, {
+        ...communicationData,
+        updated_at: serverTimestamp()
+      });
+    } catch (error) {
+      console.error('Error updating communication:', error);
+      throw error;
+    }
+  },
+
+  // Delete communication
+  async deleteCommunication(id: string): Promise<void> {
+    try {
+      const docRef = doc(db, 'communications', id);
+      await deleteDoc(docRef);
+    } catch (error) {
+      console.error('Error deleting communication:', error);
       throw error;
     }
   }
@@ -393,6 +463,20 @@ export const commissionManagementOperations = {
   // Legacy method for backward compatibility - creates in equity subcollection
   async createCommissionLegacy(data: any): Promise<string> {
     return this.createCommission(data, "equity");
+  },
+
+  // Get all records from main commission_management collection (not subcollections)
+  async getCommissionsFromMainCollection(): Promise<any[]> {
+    try {
+      const querySnapshot = await getDocs(collection(db, 'commission_management'));
+      return querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+    } catch (error) {
+      console.error('Error getting commission management records from main collection:', error);
+      throw error;
+    }
   }
 }; 
 

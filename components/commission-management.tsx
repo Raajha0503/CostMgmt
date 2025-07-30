@@ -1,8 +1,6 @@
 "use client"
 
-import type React from "react"
-
-import { useState, useCallback, useEffect } from "react"
+import React, { useState, useCallback, useEffect, useMemo } from "react"
 import {
   Upload,
   FileSpreadsheet,
@@ -14,6 +12,7 @@ import {
   DollarSign,
   TrendingUp,
   AlertTriangle,
+  Building2,
 } from "lucide-react"
 import { analyzeExcelData, mapExcelToTradeData, type ExcelAnalysis } from "@/lib/excel-processor"
 import type { TradeData } from "@/lib/data-processor"
@@ -36,11 +35,14 @@ import {
   PolarAngleAxis,
   PolarRadiusAxis,
   Radar,
+  ScatterChart,
+  Scatter,
+  ZAxis,
 } from "recharts"
 import ExcelUpload from "./excel-upload";
 import { useFirebase } from "@/hooks/use-firebase";
 import { useCommissionFirebase } from "@/hooks/use-commission-firebase";
-import { commissionManagementOperations } from "@/lib/firebase-operations";
+import { commissionManagementOperations, tradeOperations } from "@/lib/firebase-operations";
 
 type CommissionManagementProps = {}
 
@@ -102,13 +104,10 @@ export default function CommissionManagement({}: CommissionManagementProps) {
             </button>
             <button
               onClick={() => setActiveTab("management")}
-              disabled={trades.length === 0}
               className={`px-6 py-3 rounded-lg text-sm font-medium transition-all duration-200 flex items-center space-x-2 ${
                 activeTab === "management"
                   ? "bg-white dark:bg-gray-600 text-black dark:text-white shadow-sm"
-                  : trades.length === 0
-                    ? "text-gray-400 dark:text-gray-600 cursor-not-allowed"
-                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                  : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
               }`}
             >
               <DollarSign className="w-4 h-4" />
@@ -116,13 +115,10 @@ export default function CommissionManagement({}: CommissionManagementProps) {
             </button>
             <button
               onClick={() => setActiveTab("analytics")}
-              disabled={trades.length === 0}
               className={`px-6 py-3 rounded-lg text-sm font-medium transition-all duration-200 flex items-center space-x-2 ${
                 activeTab === "analytics"
                   ? "bg-white dark:bg-gray-600 text-black dark:text-white shadow-sm"
-                  : trades.length === 0
-                    ? "text-gray-400 dark:text-gray-600 cursor-not-allowed"
-                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                  : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
               }`}
             >
               <TrendingUp className="w-4 h-4" />
@@ -159,6 +155,8 @@ function CommissionDataUpload({
   const [step, setStep] = useState<"upload" | "analyze" | "map" | "complete">("upload")
   const [rawData, setRawData] = useState<any[]>([])
   const [dataType, setDataType] = useState<"equity" | "fx">("equity")
+  const [fieldMappingType, setFieldMappingType] = useState<"equity" | "fx">("equity")
+  const [isDataFromFirebase, setIsDataFromFirebase] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { commissions, loadCommissions, loadCommissionsByType, loading: firebaseLoading, createCommission } = useCommissionFirebase();
 
@@ -188,17 +186,85 @@ function CommissionDataUpload({
 
   // Handler for sourcing data from Firebase
   const handleSourceFromFirebase = async () => {
+    setLoading(true);
+    setError(null);
     try {
-      // Load data from the currently selected data type subcollection
-      const data = await commissionManagementOperations.getCommissionsByType(dataType);
-      const commissionsWithType = data.map(t => {
+      let data;
+      
+      if (dataType === "fx") {
+        console.log("Loading FX data from unified_data collection...");
+        // For FX, load from unified_data collection
+        const allTrades = await tradeOperations.getAllTrades();
+        console.log("Raw FX trades loaded:", allTrades.length);
+        // Filter for FX trades or get all if no specific FX filter needed
+        data = allTrades.map((t: any) => {
+          const converted = convertTimestamps(t);
+          return { ...converted, data_source: "fx" };
+        });
+      } else {
+        console.log("Loading Equity data from commission_management collection...");
+        // For equity, use the main commission_management collection
+        data = await commissionManagementOperations.getCommissionsFromMainCollection();
+        console.log("Raw equity data loaded:", data.length);
+        
+        // If main collection is empty, try the subcollection as fallback
+        if (data.length === 0) {
+          console.log("Main collection empty, trying equity subcollection as fallback...");
+          data = await commissionManagementOperations.getCommissionsByType("equity");
+          console.log("Equity subcollection data:", data.length);
+        }
+      }
+      
+      const commissionsWithType = data.map((t: any) => {
         const converted = convertTimestamps(t);
         return { ...converted, data_source: converted.data_type || dataType };
       });
-      onDataLoaded(commissionsWithType as any, commissionsWithType as any, dataType);
+      
+      console.log("Final processed data:", commissionsWithType.length);
+      
+      // Check if we have any data
+      if (commissionsWithType.length === 0) {
+        setError(`No ${dataType.toUpperCase()} data found in Firebase collections. Please upload some data first.`);
+        setLoading(false);
+        return;
+      }
+      
+      // Set up for field mapping instead of directly loading
+      setRawData(commissionsWithType);
+      
+      // Create analysis from Firebase data (similar to Excel analysis)
+      console.log("Firebase data loaded:", commissionsWithType.length, "records");
+      console.log("Sample record:", commissionsWithType[0]);
+      
+      const headers = commissionsWithType.length > 0 ? Object.keys(commissionsWithType[0]) : [];
+      console.log("Extracted headers:", headers);
+      
+      const analysisResult = {
+        headers,
+        rowCount: commissionsWithType.length,
+        hasData: commissionsWithType.length > 0,
+        sampleData: commissionsWithType.slice(0, 5) // First 5 rows as sample
+      };
+      setAnalysis(analysisResult);
+
+      // Set field mapping type to match data type initially
+      setFieldMappingType(dataType);
+      
+      // Mark that this data came from Firebase
+      setIsDataFromFirebase(true);
+      
+      // Auto-map fields for Firebase data using flexible mapping
+      const fields = dataType === "equity" ? equityFields : fxFields;
+      const autoMapping = createFlexibleMapping(fields, headers);
+      setFieldMapping(autoMapping);
+
+      // Move to mapping step instead of directly processing
+      setStep("map");
     } catch (error) {
       console.error("Error loading data from Firebase:", error);
       setError(`Error loading data from Firebase: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -318,7 +384,7 @@ function CommissionDataUpload({
     { key: "expenseApprovalStatus", label: "ExpenseApprovalStatus", required: false },
   ]
 
-  const tradeFields = dataType === "equity" ? equityFields : fxFields
+  const tradeFields = fieldMappingType === "equity" ? equityFields : fxFields
 
   const handleFileUpload = useCallback(
     async (uploadedFile: File) => {
@@ -339,16 +405,20 @@ function CommissionDataUpload({
             const worksheet = workbook.Sheets[firstSheetName]
             const data = XLSX.utils.sheet_to_json(worksheet)
 
-            const isFXData = detectFXData(data)
-            setDataType(isFXData ? "fx" : "equity")
-
+            // Use the selected dataType instead of auto-detecting
             const analysisResult = analyzeExcelData(data)
             setFile(uploadedFile)
             setRawData(data)
             setAnalysis(analysisResult)
 
-            const fields = isFXData ? fxFields : equityFields
-            const autoMapping = createExactMapping(fields, analysisResult.headers)
+            // Set field mapping type to match selected data type initially
+            setFieldMappingType(dataType);
+
+            // Mark that this data came from file upload (not Firebase)
+            setIsDataFromFirebase(false);
+
+            const fields = dataType === "fx" ? fxFields : equityFields
+            const autoMapping = createFlexibleMapping(fields, analysisResult.headers)
             setFieldMapping(autoMapping)
 
             setStep("map")
@@ -370,13 +440,7 @@ function CommissionDataUpload({
     [fxFields, equityFields],
   )
 
-  const detectFXData = (data: any[]): boolean => {
-    if (!data || data.length === 0) return false
-    const firstRow = data[0]
-    const headers = Object.keys(firstRow).map((h) => h.toLowerCase())
-    const fxIndicators = ["tradeid", "currencypair", "buysell", "notionalamount", "fxrate"]
-    return fxIndicators.some((indicator) => headers.some((header) => header === indicator))
-  }
+
 
   const createExactMapping = (fields: { key: string; label: string; required: boolean }[], headers: string[]) => {
     const mapping: Record<string, string> = {}
@@ -386,6 +450,112 @@ function CommissionDataUpload({
       }
     })
     return mapping
+  }
+
+  // Enhanced mapping that handles cross-type mapping (FX data -> Equity fields, etc.)
+  const createFlexibleMapping = (fields: { key: string; label: string; required: boolean }[], headers: string[]) => {
+    const mapping: Record<string, string> = {}
+    
+    // Create normalized header lookup (lowercase, remove spaces/underscores)
+    const normalizeKey = (key: string) => key.toLowerCase().replace(/[_\s-]/g, '')
+    const headerMap = headers.reduce((acc, header) => {
+      acc[normalizeKey(header)] = header
+      return acc
+    }, {} as Record<string, string>)
+    
+    // Common field mappings between FX and Equity
+    const crossTypeMapping: Record<string, string[]> = {
+      // Trade identification
+      'tradeId': ['tradeid', 'trade_id', 'tradeID', 'TradeID', 'id'],
+      'orderId': ['orderid', 'order_id', 'orderID', 'OrderID'],
+      'clientId': ['clientid', 'client_id', 'clientID', 'ClientID'],
+      
+      // Amounts and values
+      'tradeValue': ['tradevalue', 'trade_value', 'notionalamount', 'notional_amount', 'amount', 'value'],
+      'notionalAmount': ['notionalamount', 'notional_amount', 'tradevalue', 'trade_value', 'amount'],
+      'price': ['price', 'rate', 'fxrate', 'fx_rate'],
+      'fxRate': ['fxrate', 'fx_rate', 'rate', 'price'],
+      
+      // Currencies
+      'currency': ['currency', 'ccy', 'dealedcurrency', 'basecurrency', 'termcurrency'],
+      'baseCurrency': ['basecurrency', 'base_currency', 'currency', 'ccy'],
+      'termCurrency': ['termcurrency', 'term_currency', 'currency', 'ccy'],
+      'dealtCurrency': ['dealtcurrency', 'dealt_currency', 'currency', 'ccy'],
+      
+      // Dates
+      'tradeDate': ['tradedate', 'trade_date', 'date', 'executiondate', 'valuedate'],
+      'valueDate': ['valuedate', 'value_date', 'settlementdate', 'settlement_date'],
+      'settlementDate': ['settlementdate', 'settlement_date', 'valuedate', 'value_date'],
+      
+      // Trade details
+      'counterparty': ['counterparty', 'broker', 'client', 'party'],
+      'tradingVenue': ['tradingvenue', 'trading_venue', 'venue', 'exchange', 'executionvenue'],
+      'executionVenue': ['executionvenue', 'execution_venue', 'tradingvenue', 'trading_venue', 'venue'],
+      
+      // FX specific
+      'currencyPair': ['currencypair', 'currency_pair', 'pair', 'symbol'],
+      'buySell': ['buysell', 'buy_sell', 'side', 'direction', 'tradetype', 'trade_type'],
+      
+      // Equity specific  
+      'symbol': ['symbol', 'ticker', 'instrument', 'isin', 'currencypair'],
+      'isin': ['isin', 'symbol', 'ticker', 'instrument'],
+      'quantity': ['quantity', 'qty', 'amount', 'notionalamount', 'volume'],
+      
+      // Status fields
+      'tradeStatus': ['tradestatus', 'trade_status', 'status'],
+      'settlementStatus': ['settlementstatus', 'settlement_status', 'status'],
+      'confirmationStatus': ['confirmationstatus', 'confirmation_status', 'status'],
+      
+      // Fees and costs
+      'commission': ['commission', 'commissionamount', 'commission_amount', 'fee'],
+      'commissionAmount': ['commissionamount', 'commission_amount', 'commission', 'fee'],
+      'brokerageFee': ['brokeragefee', 'brokerage_fee', 'brokerage', 'fee', 'commission'],
+      'taxes': ['taxes', 'tax', 'fee'],
+      'totalCost': ['totalcost', 'total_cost', 'cost', 'amount']
+    }
+    
+    fields.forEach((field) => {
+      // First try exact match
+      if (headers.includes(field.label)) {
+        mapping[field.key] = field.label
+        return
+      }
+      
+      // Then try flexible matching
+      const possibleMatches = crossTypeMapping[field.key] || [field.key]
+      possibleMatches.push(field.label.toLowerCase()) // Add the original field label
+      
+      for (const match of possibleMatches) {
+        const normalizedMatch = normalizeKey(match)
+        if (headerMap[normalizedMatch]) {
+          mapping[field.key] = headerMap[normalizedMatch]
+          break
+        }
+      }
+    })
+    
+    return mapping
+  }
+
+  // Handler for field mapping type changes
+  const handleFieldMappingTypeChange = (newType: "equity" | "fx") => {
+    setFieldMappingType(newType);
+    
+    // Re-calculate auto-mapping with new field type using flexible mapping
+    if (analysis) {
+      const fields = newType === "equity" ? equityFields : fxFields;
+      const autoMapping = createFlexibleMapping(fields, analysis.headers);
+      setFieldMapping(autoMapping);
+    }
+  }
+
+  // Handler for auto-mapping fields
+  const handleAutoMapFields = () => {
+    if (analysis) {
+      const fields = fieldMappingType === "equity" ? equityFields : fxFields;
+      const autoMapping = createFlexibleMapping(fields, analysis.headers);
+      setFieldMapping(autoMapping);
+    }
   }
 
   const handleDrop = useCallback(
@@ -434,11 +604,65 @@ function CommissionDataUpload({
         dataSource: dataType,
       }))
 
-      handleProcessData(dataWithSource, rawData, dataType)
-      setStep("complete")
+      if (isDataFromFirebase) {
+        // Data is from Firebase - just process and show in Commission Management
+        console.log("Processing Firebase data for display (no upload to Firebase)");
+        onDataLoaded(dataWithSource, rawData, dataType);
+      } else {
+        // Data is from file upload - upload to Firebase then show
+        console.log("Processing file upload data (will upload to Firebase)");
+        handleProcessData(dataWithSource, rawData, dataType);
+        setStep("complete");
+      }
     } catch (error) {
       console.error("Error processing data:", error)
       setError(`Error processing data: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Handler to upload raw data as-is to Firebase (original Excel columns, no field mapping)
+  const uploadAsIsToFirebase = async () => {
+    if (!rawData.length) {
+      setError("No data to upload")
+      return
+    }
+
+    setLoading(true)
+    setError(null)
+    try {
+      console.log("Uploading raw data as-is (no field mapping applied):", rawData.length, "records");
+      console.log("Sample raw record:", rawData[0]);
+      
+      // Upload each record exactly as it came from Excel/CSV (no field mapping)
+      for (const record of rawData) {
+        const rawRecordWithMetadata = {
+          ...record, // Keep all original Excel column names exactly as they are
+          data_source: dataType,
+          uploaded_as_is: true,
+          upload_timestamp: new Date().toISOString(),
+          original_file_name: file?.name || 'firebase_source'
+        };
+        
+        if (dataType === "fx") {
+          // For FX data, upload to unified_data collection
+          // Add a unique trade_id if not present in any variation
+          if (!record.trade_id && !record.tradeId && !record.TradeID && !record.TradeId) {
+            rawRecordWithMetadata.trade_id = `fx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          }
+          await tradeOperations.createTrade(rawRecordWithMetadata);
+        } else {
+          // For equity data, upload to commission management collection  
+          await createCommission(rawRecordWithMetadata, dataType);
+        }
+      }
+      
+      alert(`Successfully uploaded ${rawData.length} records as-is to Firebase with original column names preserved!`);
+      setStep("complete")
+    } catch (error) {
+      console.error("Error uploading raw data as-is:", error)
+      setError(`Error uploading raw data: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
       setLoading(false)
     }
@@ -605,9 +829,37 @@ function CommissionDataUpload({
         <div className="max-w-6xl mx-auto">
           <div className="text-center mb-8">
             <h2 className="text-4xl font-bold text-gray-900 dark:text-white mb-4">Field Mapping</h2>
-            <p className="text-xl text-gray-600 dark:text-gray-400">
-              {dataType.toUpperCase()} - {tradeFields.length} fields
+            <p className="text-xl text-gray-600 dark:text-gray-400 mb-4">
+              Data Source: {dataType.toUpperCase()} → Field Mapping: {fieldMappingType.toUpperCase()} ({tradeFields.length} fields)
             </p>
+            
+            {/* Field Mapping Type Selector */}
+            <div className="flex justify-center mb-6">
+              <div className="flex bg-gray-100 dark:bg-gray-700 p-1 rounded-xl">
+                <button
+                  onClick={() => handleFieldMappingTypeChange("equity")}
+                  className={`px-6 py-3 rounded-lg flex items-center space-x-3 font-medium transition-all duration-200 ${
+                    fieldMappingType === "equity"
+                      ? "bg-white dark:bg-gray-600 text-black dark:text-white shadow-sm"
+                      : "text-gray-600 dark:text-gray-400"
+                  }`}
+                >
+                  <BarChart3 className="h-5 w-5" />
+                  <span>Map as Equity Fields</span>
+                </button>
+                <button
+                  onClick={() => handleFieldMappingTypeChange("fx")}
+                  className={`px-6 py-3 rounded-lg flex items-center space-x-3 font-medium transition-all duration-200 ${
+                    fieldMappingType === "fx"
+                      ? "bg-white dark:bg-gray-600 text-black dark:text-white shadow-sm"
+                      : "text-gray-600 dark:text-gray-400"
+                  }`}
+                >
+                  <CreditCard className="h-5 w-5" />
+                  <span>Map as FX Fields</span>
+                </button>
+              </div>
+            </div>
           </div>
 
           {error && (
@@ -625,11 +877,31 @@ function CommissionDataUpload({
                 <h3 className="text-2xl font-semibold text-gray-900 dark:text-white">Field Mapping</h3>
                 <p className="text-gray-600 dark:text-gray-400 mt-1">
                   {Object.keys(fieldMapping).length} of {tradeFields.length} fields mapped
+                  {Object.keys(fieldMapping).length > 0 && (
+                    <span className="ml-2 text-green-600 dark:text-green-400">
+                      ({Math.round((Object.keys(fieldMapping).length / tradeFields.length) * 100)}% auto-mapped)
+                    </span>
+                  )}
                 </p>
               </div>
-              <button onClick={() => setStep("upload")} className="btn-secondary">
-                Back to Upload
-              </button>
+              <div className="flex space-x-3">
+                <button 
+                  onClick={handleAutoMapFields} 
+                  className="btn-primary flex items-center space-x-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                  <span>Auto-map Fields</span>
+                </button>
+                <button onClick={() => {
+                  // Reset state when going back to upload
+                  setIsDataFromFirebase(false);
+                  setStep("upload");
+                }} className="btn-secondary">
+                  Back to Upload
+                </button>
+              </div>
             </div>
 
             <div className="overflow-auto max-h-96 rounded-lg border border-gray-200 dark:border-gray-600">
@@ -683,7 +955,14 @@ function CommissionDataUpload({
             </div>
           </div>
 
-          <div className="flex justify-end">
+          <div className="flex justify-end space-x-4">
+            <button
+              onClick={uploadAsIsToFirebase}
+              disabled={loading}
+              className="btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loading ? "Uploading..." : "Upload as is to Firebase"}
+            </button>
             <button
               onClick={processData}
               disabled={loading}
@@ -711,7 +990,10 @@ function CommissionDataUpload({
           </div>
           <div className="flex justify-center space-x-4">
             <button
-              onClick={() => setStep("upload")}
+              onClick={() => {
+                setIsDataFromFirebase(false);
+                setStep("upload");
+              }}
               className="btn-primary"
             >
               Upload More Data
@@ -719,6 +1001,7 @@ function CommissionDataUpload({
             <button
               onClick={() => {
                 setStep("upload");
+                setIsDataFromFirebase(false);
                 setError(null);
                 setFile(null);
                 setAnalysis(null);
@@ -749,6 +1032,7 @@ function CommissionManagementContent({
   const [selectedColumns, setSelectedColumns] = useState<string[]>([])
   const [availableColumns, setAvailableColumns] = useState<string[]>([])
   const [tableData, setTableData] = useState<any[]>([])
+  const [columnSearchQuery, setColumnSearchQuery] = useState<string>("")
 
   // Add pagination state
   const [currentPage, setCurrentPage] = useState<string>("1-50")
@@ -805,29 +1089,30 @@ function CommissionManagementContent({
     setSelectedColumns(defaultColumns)
   }
 
-  // Utility function to safely render cell values (handle Firestore Timestamps)
-  const renderCellValue = (value: any): string => {
-    if (value === null || value === undefined) return "-";
-    
-    // Handle Firestore Timestamps
-    if (typeof value === 'object' && value.seconds !== undefined && value.nanoseconds !== undefined) {
-      return new Date(value.seconds * 1000).toISOString();
+  // Filter columns based on search query
+  const filteredColumns = availableColumns.filter(column =>
+    column.toLowerCase().includes(columnSearchQuery.toLowerCase())
+  )
+
+  // Helper function to format cell values
+  const renderCellValue = (value: any) => {
+    if (value === null || value === undefined || value === "") return "-"
+    if (typeof value === "object" && value.seconds) {
+      // Handle Firestore timestamp
+      return new Date(value.seconds * 1000).toLocaleDateString()
     }
-    
-    // Handle other objects
-    if (typeof value === 'object') {
-      return JSON.stringify(value);
+    if (typeof value === "number") {
+      return value.toLocaleString()
     }
-    
-    return String(value);
-  };
+    return String(value)
+  }
 
   if (trades.length === 0) {
     return (
       <div className="p-8">
         <div className="card-bw p-12 text-center">
           <div className="p-4 bg-gray-100 dark:bg-gray-700 rounded-full w-fit mx-auto mb-6">
-            <DollarSign className="h-16 w-16 text-gray-400" />
+            <Building2 className="h-16 w-16 text-gray-400" />
           </div>
           <h3 className="text-2xl font-semibold text-gray-900 dark:text-white mb-3">No Data</h3>
         </div>
@@ -845,19 +1130,52 @@ function CommissionManagementContent({
           {availableColumns.length} columns available
         </p>
 
-        {/* Control Buttons */}
-        <div className="flex space-x-4 mb-6">
-          <button onClick={clearAllColumns} className="btn-secondary">
-            Clear All
-          </button>
-          <button onClick={selectDefaultColumns} className="btn-primary">
-            Select Default (First 9)
-          </button>
+        {/* Control Buttons and Search */}
+        <div className="flex flex-col sm:flex-row gap-4 mb-6">
+          <div className="flex space-x-4">
+            <button onClick={clearAllColumns} className="btn-secondary">
+              Clear All
+            </button>
+            <button onClick={selectDefaultColumns} className="btn-primary">
+              Select Default (First 9)
+            </button>
+          </div>
+          <div className="flex-1 max-w-md">
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Search columns..."
+                value={columnSearchQuery}
+                onChange={(e) => setColumnSearchQuery(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-black focus:border-black placeholder-gray-500 dark:placeholder-gray-400"
+              />
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <svg className="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              {columnSearchQuery && (
+                <button
+                  onClick={() => setColumnSearchQuery("")}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                >
+                  <svg className="h-4 w-4 text-gray-400 hover:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+            {columnSearchQuery && (
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                Showing {filteredColumns.length} of {availableColumns.length} columns
+              </p>
+            )}
+          </div>
         </div>
 
         {/* Column Selection Grid */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {availableColumns.map((column) => {
+          {filteredColumns.map((column) => {
             const isSelected = selectedColumns.includes(column)
             const canSelect = selectedColumns.length < 9 || isSelected
 
@@ -890,6 +1208,15 @@ function CommissionManagementContent({
             )
           })}
         </div>
+
+        {/* No results message */}
+        {columnSearchQuery && filteredColumns.length === 0 && (
+          <div className="text-center py-8">
+            <p className="text-gray-500 dark:text-gray-400">
+              No columns found matching "{columnSearchQuery}"
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Data Table */}
@@ -1157,16 +1484,46 @@ function CommissionAnalytics({
           if (!acc[broker]) {
             acc[broker] = { commissionFee: 0, brokerageFee: 0, settlementCost: 0 }
           }
-          acc[broker].commissionFee += getNumericValue(trade, ["commission", "commissionAmount", "commissionAmt"])
-          acc[broker].brokerageFee += getNumericValue(trade, ["brokerageFee", "brokerage", "brokerageAmount"])
-          acc[broker].settlementCost += getNumericValue(trade, ["settlementCost", "settlement", "SettlementCost"])
+          acc[broker].commissionFee += getNumericValue(trade, [
+            "commission", 
+            "commissionAmount", 
+            "commissionAmt", 
+            "Commission", 
+            "CommissionAmount",
+            "Commission Amount",
+            "commission_amount",
+            "totalCommission",
+            "commissionFee"
+          ])
+          acc[broker].brokerageFee += getNumericValue(trade, [
+            "brokerageFee", 
+            "brokerage", 
+            "brokerageAmount",
+            "BrokerageFee",
+            "Brokerage",
+            "BrokerageAmount", 
+            "Brokerage Fee",
+            "brokerage_fee",
+            "brokerFee",
+            "BrokerFee"
+          ])
+          acc[broker].settlementCost += getNumericValue(trade, [
+            "settlementCost", 
+            "settlement", 
+            "SettlementCost",
+            "Settlement Cost",
+            "settlement_cost",
+            "SettlementFee",
+            "settlementFee",
+            "Settlement Fee"
+          ])
           return acc
         },
         {} as Record<string, any>,
       )
 
       const brokerExpenseData = Object.keys(brokerExpense)
-        .map((broker) => ({
+        .map((broker: string) => ({
           broker: broker.length > 15 ? broker.substring(0, 15) + "..." : broker,
           commissionFee: brokerExpense[broker].commissionFee,
           brokerageFee: brokerExpense[broker].brokerageFee,
@@ -1176,7 +1533,7 @@ function CommissionAnalytics({
             brokerExpense[broker].brokerageFee +
             brokerExpense[broker].settlementCost,
         }))
-        .sort((a, b) => b.totalExpense - a.totalExpense) // Sort by total expense
+        .sort((a: any, b: any) => b.totalExpense - a.totalExpense) // Sort by total expense
         .slice(0, 10) // Top 10 brokers
 
       // Monthly trends for May and June only - by broker
@@ -1221,7 +1578,7 @@ function CommissionAnalytics({
 
       // Convert to array and group by broker for chart display
       const brokerMonthlyData = Object.values(mayJuneBrokerFees).reduce((acc, item: any) => {
-        const existingBroker = acc.find((b) => b.broker === item.broker)
+        const existingBroker = acc.find((b: any) => b.broker === item.broker)
         if (existingBroker) {
           if (item.month.includes("May")) {
             existingBroker.mayCommission = item.commissionFee
@@ -1252,11 +1609,11 @@ function CommissionAnalytics({
 
       // Sort by total fees and take top 8 brokers
       const feesOverTimeData = brokerMonthlyData
-        .map((broker) => ({
+        .map((broker: any) => ({
           ...broker,
           totalFees: broker.mayCommission + broker.mayBrokerage + broker.junCommission + broker.junBrokerage,
         }))
-        .sort((a, b) => b.totalFees - a.totalFees)
+        .sort((a: any, b: any) => b.totalFees - a.totalFees)
         .slice(0, 8)
 
       console.log("KPI Calculations:", {
@@ -1274,11 +1631,11 @@ function CommissionAnalytics({
         totalBrokeragePaid,
         commissionCostAsPercentOfTradeNotional,
         tradesPerBroker: Object.entries(tradesPerBroker)
-          .map(([broker, count]) => ({
+          .map(([broker, count]: [string, number]) => ({
             broker: broker.length > 12 ? broker.substring(0, 12) + "..." : broker,
             count,
           }))
-          .sort((a, b) => b.count - a.count)
+          .sort((a: any, b: any) => b.count - a.count)
           .slice(0, 8), // Top 8 brokers for better chart readability
         brokerExpenseData,
         feesOverTimeData,
@@ -1512,16 +1869,16 @@ function CommissionAnalytics({
                     <tr key={index} className="hover:bg-gray-50 dark:hover:bg-gray-700">
                       <td className="px-4 py-2 font-medium text-gray-900 dark:text-gray-100">{broker.broker}</td>
                       <td className="px-4 py-2 text-right text-gray-600 dark:text-gray-400">
-                        ${broker.commissionFee.toLocaleString()}
+                        ${(broker.commissionFee || 0).toLocaleString()}
                       </td>
                       <td className="px-4 py-2 text-right text-gray-600 dark:text-gray-400">
-                        ${broker.brokerageFee.toLocaleString()}
+                        ${(broker.brokerageFee || 0).toLocaleString()}
                       </td>
                       <td className="px-4 py-2 text-right text-gray-600 dark:text-gray-400">
-                        ${broker.settlementCost.toLocaleString()}
+                        ${(broker.settlementCost || 0).toLocaleString()}
                       </td>
                       <td className="px-4 py-2 text-right font-semibold text-gray-900 dark:text-gray-100">
-                        ${broker.totalExpense.toLocaleString()}
+                        ${(broker.totalExpense || 0).toLocaleString()}
                       </td>
                     </tr>
                   ))}
@@ -1534,81 +1891,803 @@ function CommissionAnalytics({
 
       {activeTab === "kri" && (
         <div className="space-y-8">
-          {/* KRI Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {/* KRI Summary Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             <InfoCard
-              title="Commission Cost Overruns"
-              value={`${kris.commissionCostOverruns || 0} Trades`}
-              description={`Fees > $${kris.expectedCommissionFeeBenchmark?.toLocaleString()}`}
+              title="Cost Overruns"
+              value={`${kris.commissionCostOverruns || 0}`}
+              description="Trades exceeding commission benchmark."
               isRisk={true}
               icon={<Icons.CostOverrun />}
             />
             <InfoCard
               title="Unallocated Costs"
-              value={`${kris.percentageUnallocatedCosts?.toFixed(2) || "0.00"}%`}
-              description={`${kris.unallocatedCosts || 0} trades not allocated`}
+              value={`${kris.unallocatedCosts || 0}`}
+              description="Commission entries not properly allocated."
+              isRisk={true}
+              icon={<Icons.Unallocated />}
+            />
+            <InfoCard
+              title="Unallocated %"
+              value={`${kris.percentageUnallocatedCosts?.toFixed(1) || "0.0"}%`}
+              description="Percentage of unallocated commission costs."
               isRisk={true}
               icon={<Icons.Unallocated />}
             />
             <InfoCard
               title="Incomplete Data"
-              value={`${kris.missingOrIncompleteData || 0} Trades`}
-              description="Missing critical commission data."
+              value={`${kris.missingOrIncompleteData || 0}`}
+              description="Records with missing critical information."
               isRisk={true}
               icon={<Icons.IncompleteData />}
             />
           </div>
 
-          {/* Risk Charts */}
+          {/* KRI Charts */}
           <div className="space-y-8">
-            <div className="card-bw p-6 flex flex-col items-center">
-              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Risk Indicator Overview</h3>
-              <div className="h-60 w-full">
+            {/* 1. Commission Cost Overview */}
+            <div className="card-bw p-6">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">1. Commission Cost Overview</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                Overall risk assessment across key commission risk indicators.
+              </p>
+              <div className="h-72 w-full">
                 <ResponsiveContainer width="100%" height="100%">
                   <RadarChart data={kris.kriRadarData}>
                     <PolarGrid />
                     <PolarAngleAxis dataKey="subject" />
-                    <PolarRadiusAxis angle={30} domain={[0, 100]} />
-                    <Radar name="Risk Level" dataKey="A" stroke="#ef4444" fill="#ef4444" fillOpacity={0.6} />
-                    <Tooltip formatter={(value) => `${value.toFixed(2)}%`} />
+                    <PolarRadiusAxis domain={[0, 100]} />
+                    <Radar
+                      name="Risk Level (%)"
+                      dataKey="A"
+                      stroke="#ef4444"
+                      fill="#ef4444"
+                      fillOpacity={0.3}
+                    />
+                    <Tooltip formatter={(value) => `${value}%`} />
                   </RadarChart>
                 </ResponsiveContainer>
               </div>
+              <p className="text-xs text-gray-500 mt-4 italic">Higher values indicate higher risk levels across different categories</p>
             </div>
 
-            <div className="card-bw p-6 flex flex-col items-center">
-              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Risk Distribution</h3>
-              <div className="h-60 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={[
-                        { name: "Overruns", value: kris.commissionCostOverruns || 0 },
-                        { name: "Unallocated", value: kris.unallocatedCosts || 0 },
-                        { name: "Incomplete", value: kris.missingOrIncompleteData || 0 },
-                      ]}
-                      dataKey="value"
-                      nameKey="name"
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={60}
-                      outerRadius={80}
-                      paddingAngle={5}
-                      label
-                    >
-                      <Cell fill="#ef4444" />
-                      <Cell fill="#f97316" />
-                      <Cell fill="#facc15" />
-                    </Pie>
-                    <Tooltip />
-                    <Legend />
-                  </PieChart>
-                </ResponsiveContainer>
+            {/* 2. High Commission Brokers */}
+            <div className="card-bw p-6">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">2. High Commission Brokers</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                Detects brokers receiving disproportionately high commissions, indicating possible over-reliance or negotiation gaps.
+              </p>
+              <div className="h-72 w-full">
+                <HighCommissionBrokersChart trades={trades} />
               </div>
+              <p className="text-xs text-gray-500 mt-4 italic">Cursor Hint: group by brokerName, sum commissionAmount</p>
+            </div>
+
+            {/* 3. Late Commission Approvals */}
+            <div className="card-bw p-6">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">3. Late Commission Approvals</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                Flags operational inefficiencies or control issues in the approval process.
+              </p>
+              <div className="h-72 w-full">
+                <LateCommissionApprovalsChart trades={trades} />
+              </div>
+              <p className="text-xs text-gray-500 mt-4 italic">Cursor Hint: calculate approval delay = approvalDate - invoiceDate; classify as on-time or late</p>
+            </div>
+
+            {/* 4. Commission Volume Trends */}
+            <div className="card-bw p-6">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">4. Commission Volume Trends</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                Monitors unusual spikes or drops in commission volumes that may indicate issues.
+              </p>
+              <div className="h-72 w-full">
+                <CommissionVolumeTrendsChart trades={trades} />
+              </div>
+              <p className="text-xs text-gray-500 mt-4 italic">Cursor Hint: group by date, count commissions; identify anomalies</p>
+            </div>
+
+            {/* 5. Unmapped / Orphaned Commission Entries */}
+            <div className="card-bw p-6">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">5. Unmapped / Orphaned Commission Entries</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                Highlights data quality issues or risk of missed reconciliation.
+              </p>
+              <div className="h-72 w-full">
+                <OrphanedCommissionEntriesChart trades={trades} />
+              </div>
+              <p className="text-xs text-gray-500 mt-4 italic">Cursor Hint: check if tradeId is null or missing for commission records</p>
+            </div>
+
+            {/* 6. Commission Rate Outliers */}
+            <div className="card-bw p-6">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">6. Commission Rate Outliers</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                Detects unusually high or low rates indicating manual errors or exceptions.
+              </p>
+              <div className="h-72 w-full">
+                <CommissionRateOutliersChart trades={trades} />
+              </div>
+              <p className="text-xs text-gray-500 mt-4 italic">Cursor Hint: commissionRate = commissionAmount / tradeValue; group by brokerName</p>
+            </div>
+
+            {/* 7. Failed Commission Reconciliation */}
+            <div className="card-bw p-6">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">7. Failed Commission Reconciliation</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                Identifies commission entries that failed reconciliation processes.
+              </p>
+              <div className="h-72 w-full">
+                <FailedReconciliationChart trades={trades} />
+              </div>
+              <p className="text-xs text-gray-500 mt-4 italic">Cursor Hint: filter where reconciliationStatus = 'failed' or 'pending'</p>
+            </div>
+
+            {/* 8. Currency Mismatch in Commission Entries */}
+            <div className="card-bw p-6">
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">8. Currency Mismatch in Commission Entries</h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                Identifies FX risk or input errors in commission records.
+              </p>
+              <div className="h-72 w-full">
+                <CurrencyMismatchChart trades={trades} />
+              </div>
+              <p className="text-xs text-gray-500 mt-4 italic">Cursor Hint: filter where commissionCurrency ≠ tradeCurrency</p>
             </div>
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ---------------- Helper Chart Components -----------------
+
+function HighCommissionBrokersChart({ trades }: { trades: TradeData[] }) {
+  const [viewMode, setViewMode] = useState<'table' | 'chart'>('table')
+  
+  const data = useMemo(() => {
+    const totals: Record<string, number> = {}
+    trades.forEach((trade) => {
+      const broker = (trade.broker || trade.counterparty || "Unknown") as string
+      const commissionRaw = trade.commissionAmount ?? trade.commission ?? trade.commissionAmt ?? 0
+      const commission = typeof commissionRaw === "string" ? Number(commissionRaw.replace(/[,$]/g, "")) : Number(commissionRaw)
+      if (!isNaN(commission)) {
+        totals[broker] = (totals[broker] || 0) + commission
+      }
+    })
+    return Object.entries(totals)
+      .map(([broker, sum]) => ({ broker, sum }))
+      .sort((a: any, b: any) => b.sum - a.sum)
+      .slice(0, 10) // top 10
+  }, [trades])
+
+  const COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+
+  if (viewMode === 'table') {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <h4 className="text-lg font-semibold">High Commission Brokers - Data Table</h4>
+          <button 
+            onClick={() => setViewMode('chart')}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            📊 View Chart
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full border border-gray-300">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-2 border-b text-left font-semibold">Broker</th>
+                <th className="px-4 py-2 border-b text-right font-semibold">Total Commission</th>
+                <th className="px-4 py-2 border-b text-right font-semibold">Rank</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((item, index) => (
+                <tr key={item.broker} className="hover:bg-gray-50">
+                  <td className="px-4 py-2 border-b font-medium">{item.broker}</td>
+                  <td className="px-4 py-2 border-b text-right">${item.sum.toLocaleString()}</td>
+                  <td className="px-4 py-2 border-b text-right">#{index + 1}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h4 className="text-lg font-semibold">High Commission Brokers - Chart View</h4>
+        <button 
+          onClick={() => setViewMode('table')}
+          className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+        >
+          📋 Back to Table
+        </button>
+      </div>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} layout="vertical">
+          <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+          <XAxis type="number" tickFormatter={(v) => `$${v.toLocaleString()}`}/>
+          <YAxis dataKey="broker" type="category" width={120} />
+          <Tooltip formatter={(v: any) => `$${v.toLocaleString()}`} />
+          <Bar dataKey="sum" name="Commission ($)" fill="#3b82f6">
+            {data.map((_, i) => (<Cell key={i} fill={COLORS[i % COLORS.length]} />))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+function LateCommissionApprovalsChart({ trades }: { trades: TradeData[] }) {
+  const [viewMode, setViewMode] = useState<'table' | 'chart'>('table')
+  
+  const data = useMemo(() => {
+    const map: Record<string, { onTime: number; late: number }> = {}
+    trades.forEach((t) => {
+      const approval = t.approvalDate || t.approvedDate || t.approval_timestamp
+      const invoice = t.invoiceDate || t.invoice_date || t.tradeDate
+      if (!approval || !invoice) return
+      const apprDate = new Date(approval)
+      const invDate = new Date(invoice)
+      if (isNaN(apprDate.getTime()) || isNaN(invDate.getTime())) return
+      const diff = (apprDate.getTime() - invDate.getTime()) / (1000 * 60 * 60 * 24)
+      const status = diff > 0 ? "Approved Late" : "Approved On Time"
+      const dateKey = apprDate.toISOString().split("T")[0]
+      if (!map[dateKey]) map[dateKey] = { onTime: 0, late: 0 }
+      if (status === "Approved Late") map[dateKey].late += 1
+      else map[dateKey].onTime += 1
+    })
+    // convert to array sorted by date
+    return Object.entries(map)
+      .map(([date, counts]: [string, { onTime: number; late: number }]) => ({ date, ...counts }))
+      .sort((a: any, b: any) => (a.date > b.date ? 1 : -1))
+  }, [trades])
+
+  if (viewMode === 'table') {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <h4 className="text-lg font-semibold">Late Commission Approvals - Data Table</h4>
+          <button 
+            onClick={() => setViewMode('chart')}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            📊 View Chart
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full border border-gray-300">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-2 border-b text-left font-semibold">Date</th>
+                <th className="px-4 py-2 border-b text-right font-semibold">On Time</th>
+                <th className="px-4 py-2 border-b text-right font-semibold">Late</th>
+                <th className="px-4 py-2 border-b text-right font-semibold">Total</th>
+                <th className="px-4 py-2 border-b text-right font-semibold">Late %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((item) => {
+                const total = item.onTime + item.late
+                const latePercent = total > 0 ? ((item.late / total) * 100).toFixed(1) : '0.0'
+                return (
+                  <tr key={item.date} className="hover:bg-gray-50">
+                    <td className="px-4 py-2 border-b font-medium">{item.date}</td>
+                    <td className="px-4 py-2 border-b text-right text-green-600">{item.onTime}</td>
+                    <td className="px-4 py-2 border-b text-right text-red-600">{item.late}</td>
+                    <td className="px-4 py-2 border-b text-right">{total}</td>
+                    <td className="px-4 py-2 border-b text-right">{latePercent}%</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h4 className="text-lg font-semibold">Late Commission Approvals - Chart View</h4>
+        <button 
+          onClick={() => setViewMode('table')}
+          className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+        >
+          📋 Back to Table
+        </button>
+      </div>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} stackOffset="sign">
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="date" />
+          <YAxis allowDecimals={false}/>
+          <Tooltip />
+          <Legend />
+          <Bar dataKey="onTime" stackId="a" name="Approved On Time" fill="#10b981" />
+          <Bar dataKey="late" stackId="a" name="Approved Late" fill="#ef4444" />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+function OrphanedCommissionEntriesChart({ trades }: { trades: TradeData[] }) {
+  const [viewMode, setViewMode] = useState<'table' | 'chart'>('table')
+  
+  const counts = useMemo(() => {
+    let mapped = 0
+    let orphan = 0
+    trades.forEach((t) => {
+      if (t.tradeId || t.tradeID || t.trade_id) mapped += 1
+      else orphan += 1
+    })
+    return [
+      { name: "Mapped to Trade", value: mapped },
+      { name: "Not Mapped", value: orphan },
+    ]
+  }, [trades])
+
+  const COLORS = ["#3b82f6", "#ef4444"]
+
+  if (viewMode === 'table') {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <h4 className="text-lg font-semibold">Orphaned Commission Entries - Data Table</h4>
+          <button 
+            onClick={() => setViewMode('chart')}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            📊 View Chart
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full border border-gray-300">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-2 border-b text-left font-semibold">Category</th>
+                <th className="px-4 py-2 border-b text-right font-semibold">Count</th>
+                <th className="px-4 py-2 border-b text-right font-semibold">Percentage</th>
+              </tr>
+            </thead>
+            <tbody>
+              {counts.map((item, index) => {
+                const total = counts.reduce((sum, c) => sum + c.value, 0)
+                const percentage = total > 0 ? ((item.value / total) * 100).toFixed(1) : '0.0'
+                return (
+                  <tr key={item.name} className="hover:bg-gray-50">
+                    <td className="px-4 py-2 border-b font-medium">{item.name}</td>
+                    <td className="px-4 py-2 border-b text-right">{item.value}</td>
+                    <td className="px-4 py-2 border-b text-right">{percentage}%</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h4 className="text-lg font-semibold">Orphaned Commission Entries - Chart View</h4>
+        <button 
+          onClick={() => setViewMode('table')}
+          className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+        >
+          📋 Back to Table
+        </button>
+      </div>
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie data={counts} dataKey="value" nameKey="name" innerRadius={60} outerRadius={80} label>
+            {counts.map((_, i) => (<Cell key={i} fill={COLORS[i % COLORS.length]} />))}
+          </Pie>
+          <Tooltip />
+          <Legend />
+        </PieChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+function CommissionRateOutliersChart({ trades }: { trades: TradeData[] }) {
+  const [viewMode, setViewMode] = useState<'table' | 'chart'>('table')
+  
+  const scatterData = useMemo(() => {
+    const arr: { broker: string; rate: number }[] = []
+    trades.forEach((t) => {
+      const broker = (t.broker || t.counterparty || "Unknown") as string
+      const commissionRaw = t.commissionAmount ?? t.commission ?? t.commissionAmt ?? 0
+      const tradeValueRaw = t.tradeValue ?? t.notionalAmount ?? t.notional ?? 0
+      const commission = typeof commissionRaw === "string" ? Number(commissionRaw.replace(/[,$]/g, "")) : Number(commissionRaw)
+      const tradeVal = typeof tradeValueRaw === "string" ? Number(tradeValueRaw.replace(/[,$]/g, "")) : Number(tradeValueRaw)
+      if (tradeVal > 0 && !isNaN(commission) && !isNaN(tradeVal)) {
+        const rate = (commission / tradeVal) * 100
+        arr.push({ broker, rate })
+      }
+    })
+    return arr.sort((a, b) => b.rate - a.rate)
+  }, [trades])
+
+  if (viewMode === 'table') {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <h4 className="text-lg font-semibold">Commission Rate Outliers - Data Table</h4>
+          <button 
+            onClick={() => setViewMode('chart')}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            📊 View Chart
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full border border-gray-300">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-2 border-b text-left font-semibold">Broker</th>
+                <th className="px-4 py-2 border-b text-right font-semibold">Commission Rate (%)</th>
+                <th className="px-4 py-2 border-b text-right font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {scatterData.map((item, index) => {
+                const isOutlier = item.rate > 1.0 || item.rate < 0.01
+                return (
+                  <tr key={`${item.broker}-${index}`} className={`hover:bg-gray-50 ${isOutlier ? 'bg-red-50' : ''}`}>
+                    <td className="px-4 py-2 border-b font-medium">{item.broker}</td>
+                    <td className="px-4 py-2 border-b text-right">{item.rate.toFixed(4)}%</td>
+                    <td className="px-4 py-2 border-b text-right">
+                      {isOutlier ? (
+                        <span className="text-red-600 font-semibold">⚠️ Outlier</span>
+                      ) : (
+                        <span className="text-green-600">✅ Normal</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h4 className="text-lg font-semibold">Commission Rate Outliers - Chart View</h4>
+        <button 
+          onClick={() => setViewMode('table')}
+          className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+        >
+          📋 Back to Table
+        </button>
+      </div>
+      <ResponsiveContainer width="100%" height="100%">
+        <ScatterChart>
+          <CartesianGrid />
+          <XAxis type="category" dataKey="broker" name="Broker" interval={0} tick={{ fontSize: 10 }} />
+          <YAxis type="number" dataKey="rate" name="Commission Rate (%)" unit="%" />
+          <ZAxis range={[50, 50]} />
+          <Tooltip formatter={(value: number) => `${value.toFixed(2)}%`} />
+          <Scatter data={scatterData} fill="#6366f1" name="Commission Rate" />
+        </ScatterChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+function CurrencyMismatchChart({ trades }: { trades: TradeData[] }) {
+  const [viewMode, setViewMode] = useState<'table' | 'chart'>('table')
+  
+  const data = useMemo(() => {
+    const counts: Record<string, number> = {}
+    const details: Array<{ trade: any; commissionCur: string; tradeCur: string }> = []
+    
+    trades.forEach((t) => {
+      const commissionCur = (t.commissionCurrency || t.currency || t.dealtCurrency || t.baseCurrency) as string
+      const tradeCur = (t.tradeCurrency || t.dealtCurrency || t.baseCurrency || t.currency) as string
+      if (!commissionCur || !tradeCur) return
+      if (commissionCur !== tradeCur) {
+        counts[commissionCur] = (counts[commissionCur] || 0) + 1
+        details.push({ trade: t, commissionCur, tradeCur })
+      }
+    })
+    
+    return {
+      chartData: Object.entries(counts).map(([currency, count]) => ({ currency, count })),
+      details
+    }
+  }, [trades])
+
+  if (viewMode === 'table') {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <h4 className="text-lg font-semibold">Currency Mismatch - Data Table</h4>
+          <button 
+            onClick={() => setViewMode('chart')}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            📊 View Chart
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full border border-gray-300">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-2 border-b text-left font-semibold">Trade ID</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">Commission Currency</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">Trade Currency</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">Risk Level</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.details.slice(0, 50).map((item, index) => (
+                <tr key={index} className="hover:bg-gray-50">
+                  <td className="px-4 py-2 border-b font-medium">
+                    {item.trade.tradeId || item.trade.tradeID || item.trade.trade_id || 'N/A'}
+                  </td>
+                  <td className="px-4 py-2 border-b">{item.commissionCur}</td>
+                  <td className="px-4 py-2 border-b">{item.tradeCur}</td>
+                  <td className="px-4 py-2 border-b">
+                    <span className="text-amber-600">⚠️ Mismatch</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {data.details.length > 50 && (
+            <p className="text-sm text-gray-500 mt-2">
+              Showing first 50 of {data.details.length} mismatched records
+            </p>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h4 className="text-lg font-semibold">Currency Mismatch - Chart View</h4>
+        <button 
+          onClick={() => setViewMode('table')}
+          className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+        >
+          📋 Back to Table
+        </button>
+      </div>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data.chartData}>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} />
+          <XAxis dataKey="currency" />
+          <YAxis allowDecimals={false} />
+          <Tooltip />
+          <Bar dataKey="count" fill="#facc15" name="Mismatched Records" />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+function CommissionVolumeTrendsChart({ trades }: { trades: TradeData[] }) {
+  const [viewMode, setViewMode] = useState<'table' | 'chart'>('table')
+  
+  const data = useMemo(() => {
+    const dailyCounts: Record<string, number> = {}
+    
+    trades.forEach((t) => {
+      const date = t.tradeDate || t.trade_date || t.date || t.created_at
+      if (!date) return
+      
+      const dateObj = new Date(date)
+      if (isNaN(dateObj.getTime())) return
+      
+      const dateKey = dateObj.toISOString().split('T')[0]
+      dailyCounts[dateKey] = (dailyCounts[dateKey] || 0) + 1
+    })
+    
+    return Object.entries(dailyCounts)
+      .map(([date, count]) => ({ date, count }))
+      .sort((a, b) => a.date.localeCompare(b.date))
+  }, [trades])
+
+  if (viewMode === 'table') {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <h4 className="text-lg font-semibold">Commission Volume Trends - Data Table</h4>
+          <button 
+            onClick={() => setViewMode('chart')}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            📊 View Chart
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full border border-gray-300">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-2 border-b text-left font-semibold">Date</th>
+                <th className="px-4 py-2 border-b text-right font-semibold">Commission Count</th>
+                <th className="px-4 py-2 border-b text-right font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((item, index) => {
+                const avg = data.reduce((sum, d) => sum + d.count, 0) / data.length
+                const isAnomalous = item.count > avg * 2 || item.count < avg * 0.5
+                return (
+                  <tr key={item.date} className="hover:bg-gray-50">
+                    <td className="px-4 py-2 border-b font-medium">{item.date}</td>
+                    <td className="px-4 py-2 border-b text-right">{item.count}</td>
+                    <td className="px-4 py-2 border-b text-right">
+                      {isAnomalous ? (
+                        <span className="text-red-600">⚠️ Anomaly</span>
+                      ) : (
+                        <span className="text-green-600">✅ Normal</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h4 className="text-lg font-semibold">Commission Volume Trends - Chart View</h4>
+        <button 
+          onClick={() => setViewMode('table')}
+          className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+        >
+          📋 Back to Table
+        </button>
+      </div>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="date" />
+          <YAxis allowDecimals={false} />
+          <Tooltip />
+          <Bar dataKey="count" fill="#3b82f6" name="Commission Count" />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+function FailedReconciliationChart({ trades }: { trades: TradeData[] }) {
+  const [viewMode, setViewMode] = useState<'table' | 'chart'>('table')
+  
+  const data = useMemo(() => {
+    let successful = 0
+    let failed = 0
+    let pending = 0
+    const details: Array<{ trade: any; status: string; reason: string }> = []
+    
+    trades.forEach((t) => {
+      const reconciliationStatus = (t.reconciliationStatus || t.settlementStatus || t.status || 'unknown').toLowerCase()
+      
+      if (['completed', 'settled', 'reconciled', 'success'].includes(reconciliationStatus)) {
+        successful++
+      } else if (['failed', 'error', 'rejected'].includes(reconciliationStatus)) {
+        failed++
+        details.push({ trade: t, status: 'Failed', reason: reconciliationStatus })
+      } else if (['pending', 'processing', 'in_progress'].includes(reconciliationStatus)) {
+        pending++
+        details.push({ trade: t, status: 'Pending', reason: reconciliationStatus })
+      } else {
+        pending++
+        details.push({ trade: t, status: 'Unknown', reason: reconciliationStatus })
+      }
+    })
+    
+    return {
+      chartData: [
+        { status: 'Successful', count: successful },
+        { status: 'Failed', count: failed },
+        { status: 'Pending', count: pending }
+      ],
+      details
+    }
+  }, [trades])
+
+  const COLORS = ['#10b981', '#ef4444', '#f59e0b']
+
+  if (viewMode === 'table') {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <h4 className="text-lg font-semibold">Failed Reconciliation - Data Table</h4>
+          <button 
+            onClick={() => setViewMode('chart')}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            📊 View Chart
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full border border-gray-300">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-2 border-b text-left font-semibold">Trade ID</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">Status</th>
+                <th className="px-4 py-2 border-b text-left font-semibold">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.details.map((item, index) => (
+                <tr key={index} className="hover:bg-gray-50">
+                  <td className="px-4 py-2 border-b font-medium">
+                    {item.trade.tradeId || item.trade.tradeID || item.trade.trade_id || 'N/A'}
+                  </td>
+                  <td className="px-4 py-2 border-b">
+                    <span className={`font-medium ${
+                      item.status === 'Failed' ? 'text-red-600' : 
+                      item.status === 'Pending' ? 'text-yellow-600' : 'text-gray-600'
+                    }`}>
+                      {item.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 border-b">{item.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h4 className="text-lg font-semibold">Failed Reconciliation - Chart View</h4>
+        <button 
+          onClick={() => setViewMode('table')}
+          className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+        >
+          📋 Back to Table
+        </button>
+      </div>
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie 
+            data={data.chartData} 
+            dataKey="count" 
+            nameKey="status" 
+            innerRadius={60} 
+            outerRadius={80} 
+            label
+          >
+            {data.chartData.map((_, i) => (<Cell key={i} fill={COLORS[i % COLORS.length]} />))}
+          </Pie>
+          <Tooltip />
+          <Legend />
+        </PieChart>
+      </ResponsiveContainer>
     </div>
   )
 }

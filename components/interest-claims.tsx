@@ -209,23 +209,130 @@ export default function InterestClaims() {
   const [claimRemarks, setClaimRemarks] = useState<{ [key: string]: string }>({})
   const [selectedClaimTypeReason, setSelectedClaimTypeReason] = useState<{ [key: string]: boolean }>({})
   const [issuanceSubTab, setIssuanceSubTab] = useState("receivable-claims")
-  const [replies, setReplies] = useState<{ [key: string]: any[] }>({})
-  const [showReplies, setShowReplies] = useState<{ [key: string]: boolean }>({})
-  const [loadingReplies, setLoadingReplies] = useState<{ [key: string]: boolean }>({})
+
   const [dataType, setDataType] = useState<'equity' | 'fx' | null>(null)
+  const [editedData, setEditedData] = useState<{ [key: string]: any }>({})
+  const [editingCell, setEditingCell] = useState<{ rowIndex: number; field: string } | null>(null)
+  const [savingData, setSavingData] = useState(false)
   const [settlementSubTab, setSettlementSubTab] = useState("receivable-claims")
   const { interestClaimsData, loadInterestClaimsByType, loading: firebaseLoading, createInterestClaim } = useInterestClaimsFirebase()
+
+  // Handle cell editing
+  const handleCellEdit = (rowIndex: number, field: string, value: any) => {
+    setEditedData(prev => ({
+      ...prev,
+      [`${rowIndex}-${field}`]: value
+    }))
+  }
+
+  // Handle cell click to start editing
+  const handleCellClick = (rowIndex: number, field: string) => {
+    setEditingCell({ rowIndex, field })
+  }
+
+  // Handle cell blur to stop editing
+  const handleCellBlur = () => {
+    setEditingCell(null)
+  }
+
+  // Save edited data to Firebase
+  const handleSaveData = async () => {
+    if (Object.keys(editedData).length === 0) {
+      alert("No changes to save")
+      return
+    }
+
+    setSavingData(true)
+    try {
+      const { tradeOperations } = await import("@/lib/firebase-operations")
+      
+      // Group edits by row index
+      const rowEdits: { [key: string]: any } = {}
+      Object.entries(editedData).forEach(([key, value]) => {
+        const [rowIndex, field] = key.split('-')
+        if (!rowEdits[rowIndex]) {
+          rowEdits[rowIndex] = {}
+        }
+        rowEdits[rowIndex][field] = value
+      })
+
+      // Check if we have Firebase data (with IDs) or uploaded file data
+      const hasFirebaseIds = uploadedData.length > 0 && uploadedData[0].id && typeof uploadedData[0].id === 'string' && uploadedData[0].id.length > 10
+
+      if (hasFirebaseIds) {
+        // Update existing Firebase records
+        for (const [rowIndex, updates] of Object.entries(rowEdits)) {
+          const row = uploadedData[parseInt(rowIndex)]
+          if (row && row.id) {
+            await tradeOperations.updateTrade(row.id, updates)
+          }
+        }
+
+        // Refresh data from Firebase
+        if (dataType) {
+          let data
+          if (dataType === "fx") {
+            data = await tradeOperations.getAllTrades()
+          } else {
+            data = await interestClaimsOperations.getInterestClaimsByType(dataType)
+          }
+          
+          const convertedData = data.map((item: any) => {
+            const converted: any = {}
+            for (const [key, value] of Object.entries(item)) {
+              if (
+                value &&
+                typeof value === 'object' &&
+                value !== null &&
+                'seconds' in value &&
+                'nanoseconds' in value &&
+                typeof (value as any).seconds === 'number' &&
+                typeof (value as any).nanoseconds === 'number'
+              ) {
+                converted[key] = new Date((value as any).seconds * 1000).toISOString()
+              } else if (value && typeof value === 'object') {
+                converted[key] = JSON.stringify(value)
+              } else {
+                converted[key] = value
+              }
+            }
+            return converted
+          })
+          
+          setUploadedData(convertedData)
+          setProcessedClaims(convertedData)
+        }
+      } else {
+        // Update local uploaded data (for file uploads)
+        const updatedData = [...uploadedData]
+        for (const [rowIndex, updates] of Object.entries(rowEdits)) {
+          const index = parseInt(rowIndex)
+          if (updatedData[index]) {
+            updatedData[index] = { ...updatedData[index], ...updates }
+          }
+        }
+        setUploadedData(updatedData)
+        setProcessedClaims(updatedData)
+      }
+
+      setEditedData({})
+      alert("Data saved successfully!")
+    } catch (error) {
+      console.error("Error saving data:", error)
+      alert(`Error saving data: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setSavingData(false)
+    }
+  }
   const [selectedClaimType, setSelectedClaimType] = useState<'receivable' | 'payable'>('receivable');
+  const [settlementStatuses, setSettlementStatuses] = useState<{[key: string]: string}>({});
+  const [settlementDates, setSettlementDates] = useState<{[key: string]: string}>({});
+  const [settlementAmounts, setSettlementAmounts] = useState<{[key: string]: number}>({});
 
   // Sidebar items for Interest Claims
   const sidebarItems = [
     { id: "data-upload", label: "Data Upload", icon: Upload },
     { id: "claims-management", label: "Claims Management", icon: FileText },
-    { id: "calculations", label: "Interest Calculations", icon: BarChart3 },
-    { id: "approvals", label: "Approvals", icon: CheckCircle },
-    { id: "payments", label: "Payments", icon: Target },
-    { id: "reports", label: "Reports", icon: BarChart3 },
-    { id: "settings", label: "Settings", icon: Settings },
   ]
 
   // Auto-detect field types based on content
@@ -429,7 +536,7 @@ export default function InterestClaims() {
           setUploadStep("analyze")
         } catch (error) {
           console.error("Error processing file:", error)
-          setError(`Error processing file: ${error.message}`)
+          setError(`Error processing file: ${error instanceof Error ? error.message : String(error)}`)
         } finally {
           setLoading(false)
         }
@@ -443,7 +550,7 @@ export default function InterestClaims() {
       reader.readAsArrayBuffer(file)
     } catch (error) {
       console.error("Error handling file upload:", error)
-      setError(`Error uploading file: ${error.message}`)
+      setError(`Error uploading file: ${error instanceof Error ? error.message : String(error)}`)
       setLoading(false)
     }
   }, [])
@@ -675,7 +782,7 @@ export default function InterestClaims() {
       setUploadStep("complete")
     } catch (error) {
       console.error("Error processing data:", error)
-      setError(`Error processing data: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      setError(`Error processing data: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setLoading(false)
     }
@@ -746,49 +853,56 @@ export default function InterestClaims() {
         </div>
       </div>
       {/* Source Data from Firebase Button */}
-      <Button
-        onClick={async () => {
-          if (!dataType) {
-            alert("Please select a data type first");
-            return;
-          }
-          try {
-            const data = await interestClaimsOperations.getInterestClaimsByType(dataType);
-            // Convert Firestore Timestamps to strings
-            const convertedData = data.map((item: any) => {
-              const converted: any = {};
-              for (const [key, value] of Object.entries(item)) {
-                if (
-                  value &&
-                  typeof value === 'object' &&
-                  value !== null &&
-                  'seconds' in value &&
-                  'nanoseconds' in value &&
-                  typeof (value as any).seconds === 'number' &&
-                  typeof (value as any).nanoseconds === 'number'
-                ) {
-                  converted[key] = new Date((value as any).seconds * 1000).toISOString();
-                } else if (value && typeof value === 'object') {
-                  converted[key] = JSON.stringify(value);
-                } else {
-                  converted[key] = value;
-                }
+        <Button
+          onClick={async () => {
+            if (!dataType) {
+              alert("Please select a data type first");
+              return;
+            }
+            try {
+              let data;
+              if (dataType === "fx") {
+                // Fetch all from unified_data for FX
+                data = await import("@/lib/firebase-operations").then(mod => mod.tradeOperations.getAllTrades());
+              } else {
+                // Keep existing logic for equity
+                data = await interestClaimsOperations.getInterestClaimsByType(dataType);
               }
-              return converted;
-            });
-            setUploadedData(convertedData);
-            setProcessedClaims(convertedData);
-            setUploadStep("complete");
-          } catch (error) {
-            console.error("Error loading data from Firebase:", error);
-            alert(`Error loading data from Firebase: ${error instanceof Error ? error.message : 'Unknown error'}`);
-          }
-        }}
-        disabled={!dataType || firebaseLoading}
-        className="w-full bg-blue-600 hover:bg-blue-700 text-white"
-      >
-        {firebaseLoading ? "Loading..." : "Source data from Firebase"}
-      </Button>
+              // Convert Firestore Timestamps to strings
+              const convertedData = data.map((item: any) => {
+                const converted: any = {};
+                for (const [key, value] of Object.entries(item)) {
+                  if (
+                    value &&
+                    typeof value === 'object' &&
+                    value !== null &&
+                    'seconds' in value &&
+                    'nanoseconds' in value &&
+                    typeof (value as any).seconds === 'number' &&
+                    typeof (value as any).nanoseconds === 'number'
+                  ) {
+                    converted[key] = new Date((value as any).seconds * 1000).toISOString();
+                  } else if (value && typeof value === 'object') {
+                    converted[key] = JSON.stringify(value);
+                  } else {
+                    converted[key] = value;
+                  }
+                }
+                return converted;
+              });
+              setUploadedData(convertedData);
+              setProcessedClaims(convertedData);
+              setUploadStep("complete");
+            } catch (error) {
+              console.error("Error loading data from Firebase:", error);
+              alert(`Error loading data from Firebase: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }}
+          disabled={!dataType || firebaseLoading}
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+        >
+          {firebaseLoading ? "Loading..." : "Source data from Firebase"}
+        </Button>
       {/* File Upload Area */}
       <div
         className="border-2 border-dashed border-teal-300 rounded-lg p-8 text-center hover:border-teal-400 transition-colors cursor-pointer"
@@ -817,11 +931,41 @@ export default function InterestClaims() {
         </div>
         <p className="mt-2 text-xs text-gray-500">Supported formats: Excel (.xlsx, .xls), CSV (.csv)</p>
       </div>
-      {/* Data Table Preview after loading from Firebase */}
+      {/* Editable Data Table Preview after loading from Firebase */}
       {uploadedData.length > 0 && (
         <>
           <div className="mt-8">
-            <div className="mb-2 font-semibold text-lg">Preview of Loaded Data</div>
+            <div className="flex justify-between items-center mb-4">
+              <div className="font-semibold text-lg">Editable Data from Firebase</div>
+              <div className="flex space-x-2">
+                <Button
+                  onClick={handleSaveData}
+                  disabled={savingData || Object.keys(editedData).length === 0}
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                >
+                  {savingData ? "Saving..." : "Save Changes"}
+                </Button>
+                <Button
+                  onClick={() => setEditedData({})}
+                  disabled={Object.keys(editedData).length === 0}
+                  variant="outline"
+                >
+                  Discard Changes
+                </Button>
+              </div>
+            </div>
+            
+            {Object.keys(editedData).length > 0 && (
+              <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <div className="flex items-center">
+                  <AlertCircle className="h-4 w-4 text-yellow-600 mr-2" />
+                  <span className="text-sm text-yellow-800">
+                    {Object.keys(editedData).length} field(s) have been modified. Click "Save Changes" to update Firebase.
+                  </span>
+                </div>
+              </div>
+            )}
+            
             <div className="overflow-x-auto border rounded-lg">
               <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                 <thead className="bg-gray-50 dark:bg-gray-800">
@@ -834,19 +978,59 @@ export default function InterestClaims() {
                   </tr>
                 </thead>
                 <tbody className="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
-                  {uploadedData.slice(0, 10).map((row, idx) => (
-                    <tr key={idx}>
-                      {Object.keys(uploadedData[0]).map((header) => (
-                        <td key={header} className="px-4 py-2 text-sm text-gray-900 dark:text-gray-100">
-                          {row[header]}
+                  {uploadedData.slice(0, 10).map((row, rowIdx) => (
+                    <tr key={rowIdx} className="hover:bg-gray-50 dark:hover:bg-gray-800">
+                      {Object.keys(uploadedData[0]).map((header) => {
+                        const isEditing = editingCell?.rowIndex === rowIdx && editingCell?.field === header
+                        const hasChanges = editedData[`${rowIdx}-${header}`] !== undefined
+                        const currentValue = hasChanges ? editedData[`${rowIdx}-${header}`] : row[header]
+                        
+                        return (
+                          <td 
+                            key={header} 
+                            className={`px-4 py-2 text-sm cursor-pointer ${
+                              hasChanges 
+                                ? 'bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700' 
+                                : 'text-gray-900 dark:text-gray-100'
+                            }`}
+                            onClick={() => handleCellClick(rowIdx, header)}
+                          >
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                value={currentValue || ''}
+                                onChange={(e) => handleCellEdit(rowIdx, header, e.target.value)}
+                                onBlur={handleCellBlur}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    handleCellBlur()
+                                  }
+                                  if (e.key === 'Escape') {
+                                    setEditedData(prev => {
+                                      const newData = { ...prev }
+                                      delete newData[`${rowIdx}-${header}`]
+                                      return newData
+                                    })
+                                    handleCellBlur()
+                                  }
+                                }}
+                                className="w-full px-2 py-1 border border-blue-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                autoFocus
+                              />
+                            ) : (
+                              <div className="truncate">
+                                {currentValue !== null && currentValue !== undefined ? String(currentValue) : ''}
+                              </div>
+                            )}
                         </td>
-                      ))}
+                        )
+                      })}
                     </tr>
                   ))}
                 </tbody>
               </table>
-            </div>
-            <div className="mt-2 text-xs text-gray-500">Showing up to 10 records</div>
+      </div>
+            <div className="mt-2 text-xs text-gray-500">Showing up to 10 records. Click on any cell to edit. Press Enter to save or Escape to cancel.</div>
           </div>
         </>
       )}
@@ -1061,12 +1245,12 @@ export default function InterestClaims() {
                 </div>
               </div>
 
-                          <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
-              <div
-                className="bg-teal-500 h-2 rounded-full transition-all duration-300"
-                style={{ width: `${(mappingStatus.mapped / mappingStatus.total) * 100}%` }}
-              ></div>
-            </div>
+              <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
+                <div
+                  className="bg-teal-500 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${(mappingStatus.mapped / mappingStatus.total) * 100}%` }}
+                ></div>
+              </div>
             
             {/* Settlement Fields Info */}
             <Alert className="mb-4 border-blue-200 bg-blue-50 dark:bg-blue-900/20">
@@ -1104,8 +1288,8 @@ export default function InterestClaims() {
                     
                     return (
                       <TableRow key={field.key} className={isSettlementField ? "bg-blue-50 dark:bg-blue-900/10" : ""}>
-                        <TableCell>
-                          <div>
+                      <TableCell>
+                        <div>
                             <div className="font-medium flex items-center">
                               {field.label}
                               {isSettlementField && (
@@ -1114,50 +1298,50 @@ export default function InterestClaims() {
                                 </Badge>
                               )}
                             </div>
-                            <div className="text-xs text-gray-500">{field.description}</div>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <Select
-                            value={fieldMapping[field.key] || "__none__"}
-                            onValueChange={(value) => handleFieldMapping(field.key, value)}
-                          >
-                            <SelectTrigger className="w-full">
-                              <SelectValue placeholder="Select column" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="__none__">-- Select Column --</SelectItem>
-                              {uploadAnalysis?.headers.map((header) => (
-                                <SelectItem key={header} value={header}>
-                                  {header}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className="border-gray-500 text-gray-600 text-xs">
-                            {field.type}
+                          <div className="text-xs text-gray-500">{field.description}</div>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Select
+                          value={fieldMapping[field.key] || "__none__"}
+                          onValueChange={(value) => handleFieldMapping(field.key, value)}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Select column" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none__">-- Select Column --</SelectItem>
+                            {uploadAnalysis?.headers.map((header) => (
+                              <SelectItem key={header} value={header}>
+                                {header}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="border-gray-500 text-gray-600 text-xs">
+                          {field.type}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-sm text-gray-500 max-w-xs truncate">
+                        {fieldMapping[field.key] && uploadedData.length > 0
+                          ? String(uploadedData[0][fieldMapping[field.key]] || "").substring(0, 30)
+                          : "-"}
+                      </TableCell>
+                      <TableCell>
+                        {fieldMapping[field.key] ? (
+                          <Badge variant="outline" className="border-green-500 text-green-600 text-xs">
+                            <Check className="h-3 w-3 mr-1" />
+                            Mapped
                           </Badge>
-                        </TableCell>
-                        <TableCell className="text-sm text-gray-500 max-w-xs truncate">
-                          {fieldMapping[field.key] && uploadedData.length > 0
-                            ? String(uploadedData[0][fieldMapping[field.key]] || "").substring(0, 30)
-                            : "-"}
-                        </TableCell>
-                        <TableCell>
-                          {fieldMapping[field.key] ? (
-                            <Badge variant="outline" className="border-green-500 text-green-600 text-xs">
-                              <Check className="h-3 w-3 mr-1" />
-                              Mapped
-                            </Badge>
-                          ) : (
+                        ) : (
                             <Badge variant="outline" className={`text-xs ${isSettlementField ? "border-blue-500 text-blue-600" : "border-gray-500 text-gray-600"}`}>
                               {isSettlementField ? "Required for Settlement" : "Optional"}
-                            </Badge>
-                          )}
-                        </TableCell>
-                      </TableRow>
+                          </Badge>
+                        )}
+                      </TableCell>
+                    </TableRow>
                     )
                   })}
                 </TableBody>
@@ -1233,45 +1417,116 @@ export default function InterestClaims() {
         </CardContent>
       </Card>
 
-      {/* Remove the old Processed Claims Preview table and replace with raw uploaded data table */}
+      {/* Editable Uploaded Data Preview (Raw) table */}
       <Card>
         <CardHeader>
+          <div className="flex justify-between items-center">
+            <div>
           <CardTitle>Uploaded Data Preview (Raw)</CardTitle>
           <CardDescription>
             This table shows the exact data you uploaded, with all columns and rows, before any mapping or processing.
           </CardDescription>
+            </div>
+            <div className="flex space-x-2">
+              <Button
+                onClick={handleSaveData}
+                disabled={savingData || Object.keys(editedData).length === 0}
+                className="bg-green-600 hover:bg-green-700 text-white"
+              >
+                {savingData ? "Saving..." : "Save Changes"}
+              </Button>
+              <Button
+                onClick={() => setEditedData({})}
+                disabled={Object.keys(editedData).length === 0}
+                variant="outline"
+              >
+                Discard Changes
+              </Button>
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
+          {Object.keys(editedData).length > 0 && (
+            <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <div className="flex items-center">
+                <AlertCircle className="h-4 w-4 text-yellow-600 mr-2" />
+                <span className="text-sm text-yellow-800">
+                  {Object.keys(editedData).length} field(s) have been modified. Click "Save Changes" to update Firebase.
+                </span>
+              </div>
+            </div>
+          )}
+          
           <div className="overflow-x-auto">
             {uploadedData.length === 0 ? (
               <div className="text-gray-500 text-center py-8">No data uploaded yet.</div>
             ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
+            <Table>
+              <TableHeader>
+                <TableRow>
                     {Object.keys(uploadedData[0] || {}).map((key) => (
                       <TableHead key={key} className="font-semibold text-gray-900 dark:text-gray-100">
                         {key}
                       </TableHead>
                     ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                  {uploadedData.slice(0, 10).map((row, rowIdx) => (
+                    <TableRow key={rowIdx} className="hover:bg-gray-50 dark:hover:bg-gray-800">
+                      {Object.keys(uploadedData[0] || {}).map((key) => {
+                        const isEditing = editingCell?.rowIndex === rowIdx && editingCell?.field === key
+                        const hasChanges = editedData[`${rowIdx}-${key}`] !== undefined
+                        const currentValue = hasChanges ? editedData[`${rowIdx}-${key}`] : row[key]
+                        
+                        return (
+                          <TableCell 
+                            key={key} 
+                            className={`text-xs cursor-pointer ${
+                              hasChanges 
+                                ? 'bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700' 
+                                : ''
+                            }`}
+                            onClick={() => handleCellClick(rowIdx, key)}
+                          >
+                            {isEditing ? (
+                              <input
+                                type="text"
+                                value={currentValue !== undefined && currentValue !== null ? String(currentValue) : ''}
+                                onChange={(e) => handleCellEdit(rowIdx, key, e.target.value)}
+                                onBlur={handleCellBlur}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    handleCellBlur()
+                                  }
+                                  if (e.key === 'Escape') {
+                                    setEditedData(prev => {
+                                      const newData = { ...prev }
+                                      delete newData[`${rowIdx}-${key}`]
+                                      return newData
+                                    })
+                                    handleCellBlur()
+                                  }
+                                }}
+                                className="w-full px-2 py-1 border border-blue-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs"
+                                autoFocus
+                              />
+                            ) : (
+                              <div className="truncate">
+                                {currentValue !== undefined && currentValue !== null ? String(currentValue) : ''}
+                              </div>
+                            )}
+                    </TableCell>
+                        )
+                      })}
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {uploadedData.slice(0, 10).map((row, idx) => (
-                    <TableRow key={idx}>
-                      {Object.keys(uploadedData[0] || {}).map((key) => (
-                        <TableCell key={key} className="text-xs">
-                          {row[key] !== undefined ? String(row[key]) : ""}
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                ))}
+              </TableBody>
+            </Table>
             )}
             {uploadedData.length > 10 && (
               <div className="text-xs text-gray-500 mt-2 text-center">
-                Showing first 10 rows of {uploadedData.length} total rows.
+                Showing first 10 rows of {uploadedData.length} total rows. Click on any cell to edit. Press Enter to save or Escape to cancel.
               </div>
             )}
           </div>
@@ -1305,16 +1560,16 @@ export default function InterestClaims() {
         </div>
       )
     } else {
-      switch (uploadStep) {
-        case "upload":
+    switch (uploadStep) {
+      case "upload":
           mainContent = renderUploadStep(); break;
-        case "analyze":
+      case "analyze":
           mainContent = renderAnalyzeStep(); break;
-        case "map":
+      case "map":
           mainContent = renderMappingStep(); break;
-        case "complete":
+      case "complete":
           mainContent = renderCompleteStep(); break;
-        default:
+      default:
           mainContent = renderUploadStep(); break;
       }
     }
@@ -1344,7 +1599,7 @@ export default function InterestClaims() {
                 }
                 alert("All columns from your file have been uploaded to Firebase as-is.");
               } catch (error) {
-                alert(`Error uploading data: ${error instanceof Error ? error.message : 'Unknown error'}`);
+                alert(`Error uploading data: ${error instanceof Error ? error.message : String(error)}`);
               }
             }}
           >
@@ -1384,7 +1639,6 @@ export default function InterestClaims() {
       { id: "claim-registration", label: "Claim Registration" },
       { id: "claim-issuance", label: "Claim Issuance" },
       { id: "claim-settlement", label: "Claim Settlement" },
-      { id: "claim-follow-up", label: "Claim Follow-up" },
     ]
 
     // Function to categorize claims based on business rules
@@ -1525,128 +1779,7 @@ export default function InterestClaims() {
       }))
     }
 
-    // Function to fetch replies for a specific claim ID
-    const fetchReplies = async (claimId: string) => {
-      setLoadingReplies((prev) => ({ ...prev, [claimId]: true }))
 
-      try {
-        const response = await fetch(
-          `https://script.google.com/macros/s/AKfycbzglXDLfXYUhO4nXY_U8oS5xhWCBgeVaLWyowHDz6umohEVhm29XsxllauxAAg-hJ2i/exec?claimId=${encodeURIComponent(claimId)}`,
-          {
-            method: "GET",
-            mode: "cors",
-            headers: {
-              "Content-Type": "application/json",
-            },
-          },
-        )
-
-        if (response.ok) {
-          const data = await response.json()
-          console.log("Received data:", data)
-
-          // Filter replies where sender is "Settlements"
-          const filteredData = Array.isArray(data) ? data.filter((reply) => reply.sender === "Settlements") : []
-
-          setReplies((prev) => ({ ...prev, [claimId]: filteredData || [] }))
-          setShowReplies((prev) => ({ ...prev, [claimId]: true }))
-
-          if (filteredData.length > 0) {
-            alert(`Successfully fetched ${filteredData.length} replies from Settlements.`)
-          } else {
-            alert("No replies from Settlements found for this claim.")
-          }
-        } else {
-          console.error("Failed to fetch replies:", response.status, response.statusText)
-
-          // Show error message in replies
-          setShowReplies((prev) => ({ ...prev, [claimId]: true }))
-          setReplies((prev) => ({
-            ...prev,
-            [claimId]: [
-              {
-                sender: "System",
-                message: `Failed to fetch replies. Server responded with status ${response.status}: ${response.statusText}`,
-                timestamp: new Date().toISOString(),
-              },
-            ],
-          }))
-
-          alert(`Failed to fetch replies. Server error: ${response.status} ${response.statusText}`)
-        }
-      } catch (error) {
-        console.error("Error fetching replies:", error)
-
-        // Check if it's a network error or CORS issue
-        if (error instanceof TypeError && error.message.includes("Failed to fetch")) {
-          // Still a CORS or network issue - provide fallback
-          try {
-            const fallbackUrl = `https://script.google.com/macros/s/AKfycbzglXDLfXYUhO4nXY_U8oS5xhWCBgeVaLWyowHDz6umohEVhm29XsxllauxAAg-hJ2i/exec?claimId=${encodeURIComponent(claimId)}`
-
-            // Open in new tab for manual verification
-            window.open(fallbackUrl, "_blank")
-
-            // Show placeholder replies
-            setShowReplies((prev) => ({ ...prev, [claimId]: true }))
-            setReplies((prev) => ({
-              ...prev,
-              [claimId]: [
-                {
-                  sender: "System",
-                  message:
-                    "CORS issue detected. Please check the new tab for replies data. The Google Apps Script may need additional CORS configuration.",
-                  timestamp: new Date().toISOString(),
-                },
-              ],
-            }))
-
-            alert(
-              "CORS issue detected. Opening the data URL in a new tab. Please check the new tab for the actual replies data.",
-            )
-          } catch (fallbackError) {
-            console.error("Fallback method also failed:", fallbackError)
-
-            // Show error message in replies
-            setShowReplies((prev) => ({ ...prev, [claimId]: true }))
-            setReplies((prev) => ({
-              ...prev,
-              [claimId]: [
-                {
-                  sender: "System",
-                  message:
-                    "Unable to fetch replies due to network or CORS restrictions. Please contact support or try again later.",
-                  timestamp: new Date().toISOString(),
-                },
-              ],
-            }))
-
-            alert("Unable to fetch replies. Please check your connection or contact support.")
-          }
-        } else {
-          // Other types of errors
-          setShowReplies((prev) => ({ ...prev, [claimId]: true }))
-          setReplies((prev) => ({
-            ...prev,
-            [claimId]: [
-              {
-                sender: "System",
-                message: `Error fetching replies: ${error.message}`,
-                timestamp: new Date().toISOString(),
-              },
-            ],
-          }))
-
-          alert(`Error fetching replies: ${error.message}`)
-        }
-      } finally {
-        setLoadingReplies((prev) => ({ ...prev, [claimId]: false }))
-      }
-    }
-
-    // Function to toggle replies visibility
-    const toggleReplies = (claimId: string) => {
-      setShowReplies((prev) => ({ ...prev, [claimId]: !prev[claimId] }))
-    }
 
     const renderClaimsSubTabContent = () => {
       switch (claimsSubTab) {
@@ -1693,26 +1826,45 @@ export default function InterestClaims() {
                       ["Trade Date", "TradeDate", "trade_date", "Date", "date"],
                       new Date().toISOString().split("T")[0]
                     ),
-                    tradeType: findValue(
+                    valueDate: findValue(
                       row,
-                      ["Trade Type", "TradeType", "trade_type", "Type", "Product Type", "productType"],
-                      "Unknown"
+                      ["Value Date", "ValueDate", "value_date"],
+                      new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
                     ),
-                    currency: findValue(
+                    settlementDate: findValue(
                       row,
-                      ["Currency", "CCY", "currency", "Ccy", "Base Currency", "Deal Currency"],
-                      "USD"
+                      ["Settlement Date", "SettlementDate", "settlement_date", "Settlement"],
+                      new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
                     ),
-                    tradeValue: safeNumber(
+                    // Calculate SLA breach: SettlementDate - ValueDate
+                    slaBreach: (() => {
+                      const valueDate = findValue(
+                        row,
+                        ["Value Date", "ValueDate", "value_date"],
+                        new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+                      )
+                      const settlementDate = findValue(
+                        row,
+                        ["Settlement Date", "SettlementDate", "settlement_date", "Settlement"],
+                        new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+                      )
+                      const valueDateObj = new Date(valueDate)
+                      const settlementDateObj = new Date(settlementDate)
+                      const diffTime = settlementDateObj.getTime() - valueDateObj.getTime()
+                      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+                      return diffDays
+                    })(),
+                    notionalAmount: safeNumber(
                       findValue(row, [
+                        "Notional Amount",
+                        "NotionalAmount", 
+                        "notional_amount",
                         "Trade Value",
                         "TradeValue",
                         "trade_value",
                         "Amount",
                         "Principal Amount",
-                        "Notional Amount",
-                        "Value",
-                        "tradeValue"
+                        "Value"
                       ])
                     ),
                     confirmationStatus: findValue(
@@ -1739,9 +1891,10 @@ export default function InterestClaims() {
                     clientId: "CLI-000001",
                     counterparty: "Goldman Sachs",
                     tradeDate: "2024-01-15",
-                    tradeType: "FX Forward",
-                    currency: "USD",
-                    tradeValue: 1500000,
+                    valueDate: "2024-01-17",
+                    settlementDate: "2024-01-18",
+                    slaBreach: 1,
+                    notionalAmount: 1500000,
                     confirmationStatus: "Confirmed",
                     expenseApprovalStatus: "Approved",
                     costAllocationStatus: "Allocated",
@@ -1751,9 +1904,10 @@ export default function InterestClaims() {
                     clientId: "CLI-000002",
                     counterparty: "JP Morgan",
                     tradeDate: "2024-01-16",
-                    tradeType: "Interest Rate Swap",
-                    currency: "EUR",
-                    tradeValue: 2300000,
+                    valueDate: "2024-01-18",
+                    settlementDate: "2024-01-20",
+                    slaBreach: 2,
+                    notionalAmount: 2300000,
                     confirmationStatus: "Pending",
                     expenseApprovalStatus: "Pending",
                     costAllocationStatus: "Pending",
@@ -1763,9 +1917,10 @@ export default function InterestClaims() {
                     clientId: "CLI-000003",
                     counterparty: "Morgan Stanley",
                     tradeDate: "2024-01-17",
-                    tradeType: "Equity Option",
-                    currency: "GBP",
-                    tradeValue: 850000,
+                    valueDate: "2024-01-19",
+                    settlementDate: "2024-01-22",
+                    slaBreach: 3,
+                    notionalAmount: 850000,
                     confirmationStatus: "Failed",
                     expenseApprovalStatus: "Rejected",
                     costAllocationStatus: "Failed",
@@ -1775,9 +1930,10 @@ export default function InterestClaims() {
                     clientId: "CLI-000004",
                     counterparty: "Deutsche Bank",
                     tradeDate: "2024-01-18",
-                    tradeType: "Credit Default Swap",
-                    currency: "USD",
-                    tradeValue: 5000000,
+                    valueDate: "2024-01-20",
+                    settlementDate: "2024-01-21",
+                    slaBreach: 1,
+                    notionalAmount: 5000000,
                     confirmationStatus: "Confirmed",
                     expenseApprovalStatus: "Approved",
                     costAllocationStatus: "Allocated",
@@ -1787,9 +1943,10 @@ export default function InterestClaims() {
                     clientId: "CLI-000005",
                     counterparty: "Barclays",
                     tradeDate: "2024-01-19",
-                    tradeType: "Bond Purchase",
-                    currency: "JPY",
-                    tradeValue: 3200000,
+                    valueDate: "2024-01-21",
+                    settlementDate: "2024-01-23",
+                    slaBreach: 2,
+                    notionalAmount: 3200000,
                     confirmationStatus: "Pending",
                     expenseApprovalStatus: "Pending",
                     costAllocationStatus: "Pending",
@@ -1799,9 +1956,10 @@ export default function InterestClaims() {
                     clientId: "CLI-000006",
                     counterparty: "Credit Suisse",
                     tradeDate: "2024-01-20",
-                    tradeType: "Currency Swap",
-                    currency: "CHF",
-                    tradeValue: 1800000,
+                    valueDate: "2024-01-22",
+                    settlementDate: "2024-01-25",
+                    slaBreach: 3,
+                    notionalAmount: 1800000,
                     confirmationStatus: "Rejected",
                     expenseApprovalStatus: "Failed",
                     costAllocationStatus: "Rejected",
@@ -1811,9 +1969,10 @@ export default function InterestClaims() {
                     clientId: "CLI-000007",
                     counterparty: "UBS",
                     tradeDate: "2024-01-21",
-                    tradeType: "Commodity Future",
-                    currency: "USD",
-                    tradeValue: 950000,
+                    valueDate: "2024-01-23",
+                    settlementDate: "2024-01-24",
+                    slaBreach: 1,
+                    notionalAmount: 950000,
                     confirmationStatus: "Pending",
                     expenseApprovalStatus: "Under Review",
                     costAllocationStatus: "Pending",
@@ -1823,9 +1982,10 @@ export default function InterestClaims() {
                     clientId: "CLI-000008",
                     counterparty: "HSBC",
                     tradeDate: "2024-01-22",
-                    tradeType: "FX Option",
-                    currency: "HKD",
-                    tradeValue: 2750000,
+                    valueDate: "2024-01-24",
+                    settlementDate: "2024-01-27",
+                    slaBreach: 3,
+                    notionalAmount: 2750000,
                     confirmationStatus: "Failed",
                     expenseApprovalStatus: "Rejected",
                     costAllocationStatus: "Failed",
@@ -1835,14 +1995,15 @@ export default function InterestClaims() {
           const claimReceiptData = allClaimReceiptData.filter((item) => {
             switch (claimReceiptFilter) {
               case "eligible":
-                // Show trades with 'failed' or 'rejected' statuses in any of the status fields
+                // Show trades with 'failed' or 'rejected' statuses in any of the status fields OR SLA breach > 1 day
                 return (
                   item.confirmationStatus.toLowerCase() === "failed" ||
                   item.confirmationStatus.toLowerCase() === "rejected" ||
                   item.expenseApprovalStatus.toLowerCase() === "failed" ||
                   item.expenseApprovalStatus.toLowerCase() === "rejected" ||
                   item.costAllocationStatus.toLowerCase() === "failed" ||
-                  item.costAllocationStatus.toLowerCase() === "rejected"
+                  item.costAllocationStatus.toLowerCase() === "rejected" ||
+                  item.slaBreach > 1
                 )
               case "watchlist":
                 // Show trades with 'pending' status in any of the status fields
@@ -1865,7 +2026,8 @@ export default function InterestClaims() {
                 item.expenseApprovalStatus.toLowerCase() === "failed" ||
                 item.expenseApprovalStatus.toLowerCase() === "rejected" ||
                 item.costAllocationStatus.toLowerCase() === "failed" ||
-                item.costAllocationStatus.toLowerCase() === "rejected",
+                item.costAllocationStatus.toLowerCase() === "rejected" ||
+                item.slaBreach > 1,
             ).length
 
             const watchlistCount = allClaimReceiptData.filter(
@@ -1986,10 +2148,9 @@ export default function InterestClaims() {
                     </div>
                     <div className="p-4 bg-teal-50 border border-teal-200 rounded-lg">
                       <div className="text-2xl font-bold text-teal-600">
-                        $
-                        {claimReceiptData.reduce((sum, item) => sum + Number(item.tradeValue || 0), 0).toLocaleString()}
+                        {claimReceiptData.filter((item) => item.slaBreach > 1).length}
                       </div>
-                      <div className="text-sm text-teal-700">Total Value</div>
+                      <div className="text-sm text-teal-700">SLA Breaches</div>
                     </div>
                   </div>
 
@@ -2005,11 +2166,10 @@ export default function InterestClaims() {
                               Counterparty
                             </TableHead>
                             <TableHead className="font-semibold text-gray-900 dark:text-gray-100">Trade Date</TableHead>
-                            <TableHead className="font-semibold text-gray-900 dark:text-gray-100">Trade Type</TableHead>
-                            <TableHead className="font-semibold text-gray-900 dark:text-gray-100">Currency</TableHead>
-                            <TableHead className="font-semibold text-gray-900 dark:text-gray-100 text-right">
-                              Trade Value
-                            </TableHead>
+                            <TableHead className="font-semibold text-gray-900 dark:text-gray-100">Value Date</TableHead>
+                            <TableHead className="font-semibold text-gray-900 dark:text-gray-100">Settlement Date</TableHead>
+                            <TableHead className="font-semibold text-gray-900 dark:text-gray-100">SLA Breach</TableHead>
+                            <TableHead className="font-semibold text-gray-900 dark:text-gray-100 text-right">Notional Amount</TableHead>
                             <TableHead className="font-semibold text-gray-900 dark:text-gray-100">
                               Confirmation Status
                             </TableHead>
@@ -2034,14 +2194,26 @@ export default function InterestClaims() {
                               <TableCell className="text-sm text-gray-600 dark:text-gray-400">
                                 {new Date(item.tradeDate).toLocaleDateString()}
                               </TableCell>
+                              <TableCell className="text-sm text-gray-600 dark:text-gray-400">
+                                {new Date(item.valueDate).toLocaleDateString()}
+                              </TableCell>
+                              <TableCell className="text-sm text-gray-600 dark:text-gray-400">
+                                {new Date(item.settlementDate).toLocaleDateString()}
+                              </TableCell>
                               <TableCell>
-                                <Badge variant="outline" className="border-gray-300 text-gray-700">
-                                  {item.tradeType}
+                                <Badge 
+                                  variant="outline" 
+                                  className={`${
+                                    item.slaBreach > 1 
+                                      ? "border-red-500 text-red-600 bg-red-50" 
+                                      : "border-green-500 text-green-600 bg-green-50"
+                                  }`}
+                                >
+                                  {item.slaBreach} day{item.slaBreach !== 1 ? 's' : ''}
                                 </Badge>
                               </TableCell>
-                              <TableCell className="font-medium">{item.currency}</TableCell>
                               <TableCell className="text-right font-medium">
-                                ${Number(item.tradeValue).toLocaleString()}
+                                ${Number(item.notionalAmount || 0).toLocaleString()}
                               </TableCell>
                               <TableCell>{getStatusBadge(item.confirmationStatus, "confirmation")}</TableCell>
                               <TableCell>{getStatusBadge(item.expenseApprovalStatus, "approval")}</TableCell>
@@ -2408,16 +2580,10 @@ export default function InterestClaims() {
                               Counterparty
                             </TableHead>
                             <TableHead className="font-semibold text-gray-900 dark:text-gray-100 min-w-[110px]">
-                              Trade Date
+                              SLA Breach Days
                             </TableHead>
                             <TableHead className="font-semibold text-gray-900 dark:text-gray-100 min-w-[140px]">
-                              Trade Type
-                            </TableHead>
-                            <TableHead className="font-semibold text-gray-900 dark:text-gray-100 text-right min-w-[130px]">
-                              Trade Value
-                            </TableHead>
-                            <TableHead className="font-semibold text-gray-900 dark:text-gray-100 min-w-[80px]">
-                              Currency
+                              Agreed Interest Rate
                             </TableHead>
                             <TableHead className="font-semibold text-gray-900 dark:text-gray-100 text-right min-w-[130px]">
                               PnL Calculated
@@ -2425,8 +2591,8 @@ export default function InterestClaims() {
                             <TableHead className="font-semibold text-gray-900 dark:text-gray-100 text-right min-w-[110px]">
                               FX Rate Used
                             </TableHead>
-                            <TableHead className="font-semibold text-gray-900 dark:text-gray-100 min-w-[120px]">
-                              Cost Center
+                            <TableHead className="font-semibold text-gray-900 dark:text-gray-100 text-right min-w-[120px]">
+                              Interest Amount
                             </TableHead>
                             <TableHead className="font-semibold text-gray-900 dark:text-gray-100 min-w-[110px]">
                               Claim Category
@@ -2438,6 +2604,71 @@ export default function InterestClaims() {
                         </TableHeader>
                         <TableBody>
                           {allRegistrationData.map((item, index) => {
+                            // Get slaBreach from claim receipt data (allClaimReceiptData) by matching tradeId
+                            const claimReceiptData = uploadedData.length > 0
+                              ? uploadedData.map((row, idx) => {
+                                  const findValue = (row: any, possibleNames: string[], defaultValue: any = "") => {
+                                    for (const name of possibleNames) {
+                                      if (row[name] !== undefined && row[name] !== null && row[name] !== "") {
+                                        return row[name]
+                                      }
+                                    }
+                                    return defaultValue
+                                  }
+                                  const valueDate = findValue(
+                                    row,
+                                    ["Value Date", "ValueDate", "value_date"],
+                                    new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+                                  )
+                                  const settlementDate = findValue(
+                                    row,
+                                    ["Settlement Date", "SettlementDate", "settlement_date", "Settlement"],
+                                    new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+                                  )
+                                                                     const valueDateObj = new Date(valueDate)
+                                   const settlementDateObj = new Date(settlementDate)
+                                   const diffTime = settlementDateObj.getTime() - valueDateObj.getTime()
+                                   const slaBreach = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+                                   const safeNumber = (value: any, defaultValue = 0): number => {
+                                     if (value === null || value === undefined || value === "") return defaultValue
+                                     const num = typeof value === "string" ? Number.parseFloat(value.replace(/[,$]/g, "")) : Number(value)
+                                     return isNaN(num) ? defaultValue : num
+                                   }
+                                   const notionalAmount = safeNumber(
+                                     findValue(row, [
+                                       "Notional Amount",
+                                       "NotionalAmount", 
+                                       "notional_amount",
+                                       "Trade Value",
+                                       "TradeValue",
+                                       "trade_value",
+                                       "Amount",
+                                       "Principal Amount",
+                                       "Value"
+                                     ]),
+                                     1000000
+                                   )
+                                   return {
+                                     tradeId: findValue(row, ["Trade ID", "TradeID", "trade_id", "TradeId", "id"], `TRD-${String(idx + 1).padStart(6, "0")}`),
+                                     slaBreach: slaBreach,
+                                     notionalAmount: notionalAmount
+                                   }
+                                })
+                                                             : [
+                                   { tradeId: "TRD-000001", slaBreach: 1, notionalAmount: 1500000 },
+                                   { tradeId: "TRD-000002", slaBreach: 2, notionalAmount: 2300000 },
+                                   { tradeId: "TRD-000003", slaBreach: 3, notionalAmount: 850000 },
+                                   { tradeId: "TRD-000004", slaBreach: 1, notionalAmount: 5000000 },
+                                   { tradeId: "TRD-000005", slaBreach: 2, notionalAmount: 3200000 },
+                                   { tradeId: "TRD-000006", slaBreach: 3, notionalAmount: 1800000 },
+                                   { tradeId: "TRD-000007", slaBreach: 1, notionalAmount: 950000 },
+                                   { tradeId: "TRD-000008", slaBreach: 3, notionalAmount: 2750000 }
+                                 ]
+
+                                                         const matchingClaimReceipt = claimReceiptData.find(claim => claim.tradeId === item.tradeId)
+                             const slaBreach = matchingClaimReceipt ? matchingClaimReceipt.slaBreach : 0
+                             const notionalAmount = matchingClaimReceipt ? matchingClaimReceipt.notionalAmount : item.tradeValue || 0
+
                             const itemWithStatus = {
                               ...item,
                               confirmationStatus:
@@ -2485,17 +2716,16 @@ export default function InterestClaims() {
                                 </TableCell>
                                 <TableCell className="font-medium">{item.counterparty}</TableCell>
                                 <TableCell className="text-sm text-gray-600 dark:text-gray-400">
-                                  {new Date(item.tradeDate).toLocaleDateString()}
+                                  {slaBreach} days
                                 </TableCell>
-                                <TableCell>
-                                  <Badge variant="outline" className="border-gray-300 text-gray-700">
-                                    {item.tradeType}
-                                  </Badge>
+                                <TableCell className="text-sm text-gray-600 dark:text-gray-400">
+                                  {(() => {
+                                    // Generate consistent interest rate based on claim ID
+                                    const seed = item.claimId.charCodeAt(0) + item.claimId.charCodeAt(1);
+                                    const interestRate = ((seed % 50) / 10 + 2).toFixed(2);
+                                    return `${interestRate}%`;
+                                  })()}
                                 </TableCell>
-                                <TableCell className="text-right font-medium">
-                                  ${Number(item.tradeValue).toLocaleString()}
-                                </TableCell>
-                                <TableCell className="font-medium">{item.currency}</TableCell>
                                 <TableCell className="text-right font-medium">
                                   <span
                                     className={
@@ -2514,10 +2744,18 @@ export default function InterestClaims() {
                                     ? "1.0000"
                                     : Number(item.fxRateUsed).toFixed(4)}
                                 </TableCell>
-                                <TableCell>
-                                  <Badge variant="outline" className="border-blue-300 text-blue-700">
-                                    {item.costCenter}
-                                  </Badge>
+                                <TableCell className="text-right font-medium">
+                                  {(() => {
+                                                                         // Use same interest rate calculation as above
+                                     const seed = item.claimId.charCodeAt(0) + item.claimId.charCodeAt(1);
+                                     const interestRate = ((seed % 50) / 10 + 2) / 100;
+                                     if (slaBreach > 1) {
+                                       const interestAmount = interestRate * notionalAmount * (slaBreach / 365);
+                                       return `$${interestAmount.toFixed(2)}`;
+                                     } else {
+                                       return "$0.00";
+                                     }
+                                  })()}
                                 </TableCell>
                                 <TableCell>
                                   <div className="max-w-[200px]">
@@ -2604,161 +2842,9 @@ export default function InterestClaims() {
                                       </div>
                                     )}
 
-                                    <div className="flex items-center space-x-2 min-w-[200px]">
-                                      <input
-                                        id={`messageBox-${item.claimId}`}
-                                        type="text"
-                                        placeholder="Type your message..."
-                                        className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
-                                      />
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        className="border-teal-500 text-teal-600 hover:bg-teal-50 bg-transparent px-3"
-                                        onClick={async () => {
-                                          const messageBox = document.getElementById(
-                                            `messageBox-${item.claimId}`,
-                                          ) as HTMLInputElement
-                                          const message = messageBox?.value
 
-                                          if (!message || message.trim() === "") {
-                                            alert("Please enter a message before sending.")
-                                            return
-                                          }
 
-                                          // Show loading state
-                                          const sendButton = document.querySelector(`#messageBox-${item.claimId}`)
-                                            ?.nextElementSibling as HTMLButtonElement
-                                          if (sendButton) {
-                                            sendButton.disabled = true
-                                            sendButton.textContent = "Sending..."
-                                          }
 
-                                          try {
-                                            const payload = {
-                                              claimId: item.claimId,
-                                              tradeId: item.tradeId,
-                                              sender: "Cost Management",
-                                              receiver: "Settlements",
-                                              message: message.trim(),
-                                              timestamp: new Date().toISOString(),
-                                              counterparty: item.counterparty,
-                                              claimAmount: Math.abs(Number(item.pnlCalculated)),
-                                              currency: item.currency,
-                                            }
-
-                                            console.log("Sending payload:", payload)
-
-                                            const response = await fetch(
-                                              "https://script.google.com/macros/s/AKfycbzglXDLfXYUhO4nXY_U8oS5xhWCBgeVaLWyowHDz6umohEVhm29XsxllauxAAg-hJ2i/exec",
-                                              {
-                                                method: "POST",
-                                                mode: "no-cors",
-                                                headers: {
-                                                  "Content-Type": "application/json",
-                                                },
-                                                body: JSON.stringify(payload),
-                                              },
-                                            )
-
-                                            console.log("Request sent successfully")
-                                            alert("Message sent successfully!")
-
-                                            // Clear the message box after successful send
-                                            if (messageBox) {
-                                              messageBox.value = ""
-                                            }
-                                          } catch (error) {
-                                            console.error("Error sending message:", error)
-
-                                            // Fallback: Try with a simpler approach
-                                            try {
-                                              const fallbackUrl = `https://script.google.com/macros/s/AKfycbzglXDLfXYUhO4nXY_U8oS5xhWCBgeVaLWyowHDz6umohEVhm29XsxllauxAAg-hJ2i/exec?claimId=${encodeURIComponent(item.claimId)}&sender=${encodeURIComponent("Cost Management")}&receiver=${encodeURIComponent("Settlements")}&message=${encodeURIComponent(message.trim())}`
-
-                                              window.open(fallbackUrl, "_blank")
-                                              alert("Message sent via fallback method. Please check the new tab.")
-
-                                              if (messageBox) {
-                                                messageBox.value = ""
-                                              }
-                                            } catch (fallbackError) {
-                                              console.error("Fallback method also failed:", fallbackError)
-                                              alert("Failed to send message. Please try again or contact support.")
-                                            }
-                                          } finally {
-                                            if (sendButton) {
-                                              sendButton.disabled = false
-                                              sendButton.textContent = "Send"
-                                            }
-                                          }
-                                        }}
-                                      >
-                                        Send
-                                      </Button>
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        className="border-blue-500 text-blue-600 hover:bg-blue-50 bg-transparent px-3"
-                                        onClick={() => fetchReplies(item.claimId)}
-                                        disabled={loadingReplies[item.claimId]}
-                                      >
-                                        {loadingReplies[item.claimId] ? "Loading..." : "View Reply"}
-                                      </Button>
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        className="border-purple-500 text-purple-600 hover:bg-purple-50 bg-transparent px-3"
-                                        onClick={() =>
-                                          window.open(
-                                            "https://docs.google.com/spreadsheets/d/1bBFiupPJMeCfNnEiIIiuTYmaStBddMhFUr6fSfEHKMs/edit?gid=0#gid=0",
-                                            "_blank",
-                                          )
-                                        }
-                                      >
-                                        Communication
-                                      </Button>
-                                    </div>
-
-                                    {/* Display replies */}
-                                    {item.claimId && showReplies[item.claimId] && replies[item.claimId] && (
-                                      <div className="mt-2 p-3 bg-gray-50 border border-gray-200 rounded-md">
-                                        <div className="flex items-center justify-between mb-2">
-                                          <h4 className="text-sm font-semibold text-gray-700">
-                                            Replies from Settlements
-                                          </h4>
-                                          <Button
-                                            size="sm"
-                                            variant="ghost"
-                                            className="h-6 w-6 p-0"
-                                            onClick={() => toggleReplies(item.claimId)}
-                                          >
-                                            <X className="h-3 w-3" />
-                                          </Button>
-                                        </div>
-                                        {replies[item.claimId].length > 0 ? (
-                                          <div className="space-y-2 max-h-40 overflow-y-auto">
-                                            {replies[item.claimId].map((reply, idx) => (
-                                              <div
-                                                key={idx}
-                                                className="text-xs p-2 border-l-2 border-blue-400 bg-blue-50"
-                                              >
-                                                <div className="flex justify-between">
-                                                  <span className="font-medium text-blue-700">
-                                                    {reply.sender || "Settlements"}
-                                                  </span>
-                                                  <span className="text-gray-500">
-                                                    {new Date(reply.timestamp).toLocaleString()}
-                                                  </span>
-                                                </div>
-                                                <p className="mt-1 text-gray-700">{reply.message}</p>
-                                              </div>
-                                            ))}
-                                          </div>
-                                        ) : (
-                                          <p className="text-xs text-gray-500">No replies from settlements yet.</p>
-                                        )}
-                                      </div>
-                                    )}
                                   </div>
                                 </TableCell>
                               </TableRow>
@@ -2939,6 +3025,7 @@ export default function InterestClaims() {
                           : index % 5 === 1
                             ? "Pending"
                             : "Allocated",
+                    interestAmount: 0, // Placeholder, will be calculated below
                   }
 
                   return item
@@ -2960,6 +3047,7 @@ export default function InterestClaims() {
                     confirmationStatus: "Failed",
                     expenseApprovalStatus: "Rejected",
                     costAllocationStatus: "Failed",
+                    interestAmount: 0,
                   },
                   {
                     claimId: "CLM-000002",
@@ -2976,6 +3064,7 @@ export default function InterestClaims() {
                     confirmationStatus: "Pending",
                     expenseApprovalStatus: "Pending",
                     costAllocationStatus: "Failed",
+                    interestAmount: 0,
                   },
                   {
                     claimId: "CLM-000003",
@@ -2992,6 +3081,7 @@ export default function InterestClaims() {
                     confirmationStatus: "Failed",
                     expenseApprovalStatus: "Approved",
                     costAllocationStatus: "Allocated",
+                    interestAmount: 0,
                   },
                   {
                     claimId: "CLM-000004",
@@ -3008,6 +3098,7 @@ export default function InterestClaims() {
                     confirmationStatus: "Confirmed",
                     expenseApprovalStatus: "Approved",
                     costAllocationStatus: "Allocated",
+                    interestAmount: 0,
                   },
                   {
                     claimId: "CLM-000005",
@@ -3024,6 +3115,7 @@ export default function InterestClaims() {
                     confirmationStatus: "Pending",
                     expenseApprovalStatus: "Pending",
                     costAllocationStatus: "Pending",
+                    interestAmount: 0,
                   },
                   {
                     claimId: "CLM-000006",
@@ -3040,6 +3132,7 @@ export default function InterestClaims() {
                     confirmationStatus: "Rejected",
                     expenseApprovalStatus: "Failed",
                     costAllocationStatus: "Rejected",
+                    interestAmount: 0,
                   },
                   {
                     claimId: "CLM-000007",
@@ -3056,6 +3149,7 @@ export default function InterestClaims() {
                     confirmationStatus: "Pending",
                     expenseApprovalStatus: "Under Review",
                     costAllocationStatus: "Pending",
+                    interestAmount: 0,
                   },
                   {
                     claimId: "CLM-000008",
@@ -3063,15 +3157,13 @@ export default function InterestClaims() {
                     clientId: "CLI-000008",
                     counterparty: "HSBC",
                     tradeDate: "2024-01-22",
-                    tradeType: "FX Option",
+                    tradeType: "FX Swap",
                     tradeValue: 2750000,
-                    currency: "HKD",
-                    pnlCalculated: 32000,
-                    fxRateUsed: 7.85,
-                    costCenter: "FX Trading",
-                    confirmationStatus: "Failed",
-                    expenseApprovalStatus: "Rejected",
-                    costAllocationStatus: "Failed",
+                    currency: "EUR",
+                    pnlCalculated: -18000,
+                    fxRateUsed: 1.095,
+                    costCenter: "Emerging Markets Desk",
+                    interestAmount: 0,
                   },
                   {
                     tradeId: "TRD-000009",
@@ -3087,8 +3179,85 @@ export default function InterestClaims() {
                     confirmationStatus: "Pending",
                     expenseApprovalStatus: "Pending",
                     costAllocationStatus: "Pending",
+                    interestAmount: 0,
                   },
                 ]
+
+          // Calculate interest amount for each item
+          allIssuanceSourceData.forEach(item => {
+            const claimReceiptData = uploadedData.length > 0
+              ? uploadedData.map((row, idx) => {
+                  const findValue = (row: any, possibleNames: string[], defaultValue: any = "") => {
+                    for (const name of possibleNames) {
+                      if (row[name] !== undefined && row[name] !== null && row[name] !== "") {
+                        return row[name]
+                      }
+                    }
+                    return defaultValue
+                  }
+                  const valueDate = findValue(
+                    row,
+                    ["Value Date", "ValueDate", "value_date"],
+                    new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+                  )
+                  const settlementDate = findValue(
+                    row,
+                    ["Settlement Date", "SettlementDate", "settlement_date", "Settlement"],
+                    new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+                  )
+                                                     const valueDateObj = new Date(valueDate)
+                   const settlementDateObj = new Date(settlementDate)
+                   const diffTime = settlementDateObj.getTime() - valueDateObj.getTime()
+                   const slaBreach = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+                   const safeNumber = (value: any, defaultValue = 0): number => {
+                     if (value === null || value === undefined || value === "") return defaultValue
+                     const num = typeof value === "string" ? Number.parseFloat(value.replace(/[,$]/g, "")) : Number(value)
+                     return isNaN(num) ? defaultValue : num
+                   }
+                   const notionalAmount = safeNumber(
+                     findValue(row, [
+                       "Notional Amount",
+                       "NotionalAmount", 
+                       "notional_amount",
+                       "Trade Value",
+                       "TradeValue",
+                       "trade_value",
+                       "Amount",
+                       "Principal Amount",
+                       "Value"
+                     ]),
+                     1000000
+                   )
+                   return {
+                     tradeId: findValue(row, ["Trade ID", "TradeID", "trade_id", "TradeId", "id"], `TRD-${String(idx + 1).padStart(6, "0")}`),
+                     slaBreach: slaBreach,
+                     notionalAmount: notionalAmount
+                   }
+                })
+                                             : [
+                   { tradeId: "TRD-000001", slaBreach: 1, notionalAmount: 1500000 },
+                   { tradeId: "TRD-000002", slaBreach: 2, notionalAmount: 2300000 },
+                   { tradeId: "TRD-000003", slaBreach: 3, notionalAmount: 850000 },
+                   { tradeId: "TRD-000004", slaBreach: 1, notionalAmount: 5000000 },
+                   { tradeId: "TRD-000005", slaBreach: 2, notionalAmount: 3200000 },
+                   { tradeId: "TRD-000006", slaBreach: 3, notionalAmount: 1800000 },
+                   { tradeId: "TRD-000007", slaBreach: 1, notionalAmount: 950000 },
+                   { tradeId: "TRD-000008", slaBreach: 3, notionalAmount: 2750000 }
+                 ]
+
+                                         const matchingClaimReceipt = claimReceiptData.find(claim => claim.tradeId === item.tradeId)
+             const slaBreach = matchingClaimReceipt ? matchingClaimReceipt.slaBreach : 0
+             const notionalAmount = matchingClaimReceipt ? matchingClaimReceipt.notionalAmount : item.tradeValue || 0
+            
+            const seed = item.claimId ? (item.claimId.charCodeAt(0) + item.claimId.charCodeAt(1)) : 100;
+            const interestRate = ((seed % 50) / 10 + 2) / 100; // Example: 2.0% to 7.0%
+
+            if (slaBreach > 1) {
+              item.interestAmount = interestRate * notionalAmount * (slaBreach / 365);
+            } else {
+              item.interestAmount = 0;
+            }
+          });
 
           // Separate receivable and payable claims
           const receivableClaims = allIssuanceSourceData.filter((item) => {
@@ -3120,7 +3289,7 @@ export default function InterestClaims() {
             return new Promise((resolve) => {
               const doc = new jsPDF()
               const currentDate = new Date().toLocaleDateString()
-              const claimAmount = Math.abs(Number(claim.pnlCalculated))
+              const interestAmount = Math.abs(Number(claim.interestAmount ?? 0))
 
               // Set up fonts and colors
               doc.setFont("helvetica")
@@ -3231,7 +3400,7 @@ export default function InterestClaims() {
               doc.text("CLAIM DETAILS:", 20, yPos)
 
               const claimDetails = [
-                ["Claim Amount:", `${claim.currency} ${claimAmount.toLocaleString()}`],
+                ["Interest Amount:", `${claim.currency} ${interestAmount.toLocaleString()}`],
                 ["Claim Type:", claimType.toUpperCase()],
                 ["FX Rate Applied:", Number(claim.fxRateUsed).toFixed(4)],
               ]
@@ -3255,8 +3424,8 @@ export default function InterestClaims() {
               doc.setFont("helvetica", "normal")
               const justificationText =
                 claimType === "receivable"
-                  ? `This claim arises due to settlement issues and/or processing failures that have resulted in a financial loss to our organization. The positive PnL of ${claim.currency} ${claimAmount.toLocaleString()} represents amounts that should have been realized but were not due to processing issues.`
-                  : `This internal claim notification is for processing a payable amount of ${claim.currency} ${claimAmount.toLocaleString()} due to cost allocation issues. The negative PnL indicates potential liability that requires internal review and processing.`
+                  ? `This claim arises due to settlement issues and/or processing failures that have resulted in a financial loss to our organization. The positive PnL of ${claim.currency} ${interestAmount.toLocaleString()} represents amounts that should have been realized but were not due to processing issues.`
+                  : `This internal claim notification is for processing a payable amount of ${claim.currency} ${interestAmount.toLocaleString()} due to cost allocation issues. The negative PnL indicates potential liability that requires internal review and processing.`
 
               const splitText = doc.splitTextToSize(justificationText, 170)
               doc.text(splitText, 20, yPos)
@@ -3327,6 +3496,13 @@ export default function InterestClaims() {
               yPos += 5
               doc.text(`Generated on: ${new Date().toLocaleString()}`, 20, yPos)
 
+              // Add Interest Amount to the details table
+              doc.setFont("helvetica", "bold")
+              doc.text("Interest Amount:", 25, yPos)
+              doc.setFont("helvetica", "normal")
+              doc.text(`${claim.currency} ${interestAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 80, yPos)
+              yPos += 7
+
               // Convert to blob
               const pdfBlob = doc.output("blob")
               resolve(pdfBlob)
@@ -3337,11 +3513,11 @@ export default function InterestClaims() {
           const handleSendEmail = (claim: any, claimType: "receivable" | "payable") => {
             try {
               // Generate email content
-              const claimAmount = Math.abs(Number(claim.pnlCalculated))
+              const interestAmount = Math.abs(Number(claim.interestAmount ?? 0))
               const subject =
                 claimType === "receivable"
-                  ? `URGENT: Claim Notice - Trade ${claim.tradeId} - Amount: ${claim.currency} ${claimAmount.toLocaleString()}`
-                  : `Internal Claim Processing Required - Trade ${claim.tradeId} - Amount: ${claim.currency} ${claimAmount.toLocaleString()}`
+                                  ? `URGENT: Claim Notice - Trade ${claim.tradeId} - Amount: ${claim.currency} ${interestAmount.toLocaleString()}`
+                : `Internal Claim Processing Required - Trade ${claim.tradeId} - Amount: ${claim.currency} ${interestAmount.toLocaleString()}`
 
               const recipients =
                 claimType === "receivable"
@@ -3360,14 +3536,14 @@ We hereby submit a formal claim notice for Trade ${claim.tradeId}.
 CLAIM SUMMARY:
 - Claim ID: ${claim.claimId}
 - Trade ID: ${claim.tradeId}
-- Claim Amount: ${claim.currency} ${claimAmount.toLocaleString()}
+- Interest Amount: ${claim.currency} ${interestAmount.toLocaleString()}
 - Trade Date: ${new Date(claim.tradeDate).toLocaleDateString()}
 - Trade Type: ${claim.tradeType}
 - Counterparty: ${claim.counterparty}
 - Cost Center: ${claim.costCenter}
 
 CLAIM DETAILS:
-This claim arises from settlement issues and processing failures that have resulted in unrealized profits. The positive PnL of ${claim.currency} ${claimAmount.toLocaleString()} represents amounts that should have been realized but were not due to processing issues.
+This claim arises from settlement issues and processing failures that have resulted in unrealized profits. The positive PnL of ${claim.currency} ${interestAmount.toLocaleString()} represents amounts that should have been realized but were not due to processing issues.
 
 TRADE STATUS INFORMATION:
 - Confirmation Status: ${claim.confirmationStatus}
@@ -3403,14 +3579,14 @@ We notify you of an internal claim requiring your attention and processing.
 CLAIM SUMMARY:
 - Claim ID: ${claim.claimId}
 - Trade ID: ${claim.tradeId}
-- Claim Amount: ${claim.currency} ${claimAmount.toLocaleString()}
+- Interest Amount: ${claim.currency} ${interestAmount.toLocaleString()}
 - Trade Date: ${new Date(claim.tradeDate).toLocaleDateString()}
 - Counterparty: ${claim.counterparty}
 - Claim Type: PAYABLE
 - Cost Center: ${claim.costCenter}
 
 CLAIM DETAILS:
-This internal claim notification is for a payable amount of ${claim.currency} ${claimAmount.toLocaleString()} due to cost allocation issues and processing failures. The negative PnL indicates potential liability that requires internal review and processing.
+This internal claim notification is for a payable amount of ${claim.currency} ${interestAmount.toLocaleString()} due to cost allocation issues and processing failures. The negative PnL indicates potential liability that requires internal review and processing.
 
 TRADE STATUS INFORMATION:
 - Confirmation Status: ${claim.confirmationStatus}
@@ -3516,10 +3692,10 @@ Generated on: ${new Date().toLocaleString()}`
                     <div className="text-2xl font-bold text-blue-600">
                       $
                       {currentClaims
-                        .reduce((sum, item) => sum + Math.abs(Number(item.pnlCalculated)), 0)
-                        .toLocaleString()}
+                        .reduce((sum, item) => sum + Math.abs(Number(item.interestAmount || 0)), 0)
+                        .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
-                    <div className="text-sm text-blue-700">Total Claim Amount</div>
+                    <div className="text-sm text-blue-700">Total Interest Amount</div>
                   </div>
                   <div className="p-4 bg-purple-50 border border-purple-200 rounded-lg">
                     <div className="text-2xl font-bold text-purple-600">
@@ -3594,7 +3770,7 @@ Generated on: ${new Date().toLocaleString()}`
                               <TableHead
                                 className={`font-semibold ${isReceivable ? "text-green-800 dark:text-green-200" : "text-red-800 dark:text-red-200"} text-right`}
                               >
-                                Claim Amount
+                                Interest Amount
                               </TableHead>
                               <TableHead
                                 className={`font-semibold ${isReceivable ? "text-green-800 dark:text-green-200" : "text-red-800 dark:text-red-200"}`}
@@ -3611,11 +3787,7 @@ Generated on: ${new Date().toLocaleString()}`
                               >
                                 Actions
                               </TableHead>
-                              <TableHead
-                                className={`font-semibold ${isReceivable ? "text-green-800 dark:text-green-200" : "text-red-800 dark:text-red-200"}`}
-                              >
-                                Notes
-                              </TableHead>
+
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -3644,7 +3816,7 @@ Generated on: ${new Date().toLocaleString()}`
                                 <TableCell
                                   className={`text-right font-medium ${isReceivable ? "text-green-600" : "text-red-600"}`}
                                 >
-                                  {isReceivable ? "+" : "-"}${Math.abs(Number(claim.pnlCalculated)).toLocaleString()}
+                                  {isReceivable ? "+" : "-"}${Math.abs(Number(claim.interestAmount || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </TableCell>
                                 <TableCell className="font-medium">{claim.currency}</TableCell>
                                 <TableCell>
@@ -3673,175 +3845,6 @@ Generated on: ${new Date().toLocaleString()}`
                                     </Button>
                                   </div>
                                 </TableCell>
-                                <TableCell>
-                                  <div className="space-y-2">
-                                    <div className="flex items-center space-x-2 min-w-[200px]">
-                                      {claimType === "payable" ? (
-                                        <input
-                                          id={`messageBox-${claim.claimId}`}
-                                          type="text"
-                                          placeholder="Type your message..."
-                                          defaultValue={`Internal Claim Processing Required - Trade ${claim.tradeId} - Amount: ${claim.currency} ${Math.abs(Number(claim.pnlCalculated)).toLocaleString()} - This internal claim notification is for a payable amount due to cost allocation issues and processing failures. The negative PnL indicates potential liability that requires internal review and processing. Please confirm receipt and provide expected processing timeline.`}
-                                          className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
-                                        />
-                                      ) : (
-                                        <input
-                                          id={`messageBox-${claim.claimId}`}
-                                          type="text"
-                                          placeholder="Type your message..."
-                                          className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
-                                        />
-                                      )}
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        className="border-teal-500 text-teal-600 hover:bg-teal-50 bg-transparent px-3"
-                                        onClick={async () => {
-                                          const messageBox = document.getElementById(
-                                            `messageBox-${claim.claimId}`,
-                                          ) as HTMLInputElement
-                                          const message = messageBox?.value
-
-                                          if (!message || message.trim() === "") {
-                                            alert("Please enter a message before sending.")
-                                            return
-                                          }
-
-                                          // Show loading state
-                                          const sendButton = document.querySelector(`#messageBox-${claim.claimId}`)
-                                            ?.nextElementSibling as HTMLButtonElement
-                                          if (sendButton) {
-                                            sendButton.disabled = true
-                                            sendButton.textContent = "Sending..."
-                                          }
-
-                                          try {
-                                            const payload = {
-                                              claimId: claim.claimId,
-                                              tradeId: claim.tradeId,
-                                              sender: "Cost Management",
-                                              receiver: "Settlements",
-                                              message: message.trim(),
-                                              timestamp: new Date().toISOString(),
-                                              counterparty: claim.counterparty,
-                                              claimAmount: Math.abs(Number(claim.pnlCalculated)),
-                                              currency: claim.currency,
-                                            }
-
-                                            console.log("Sending payload:", payload)
-
-                                            const response = await fetch(
-                                              "https://script.google.com/macros/s/AKfycbzglXDLfXYUhO4nXY_U8oS5xhWCBgeVaLWyowHDz6umohEVhm29XsxllauxAAg-hJ2i/exec",
-                                              {
-                                                method: "POST",
-                                                mode: "no-cors",
-                                                headers: {
-                                                  "Content-Type": "application/json",
-                                                },
-                                                body: JSON.stringify(payload),
-                                              },
-                                            )
-
-                                            console.log("Request sent successfully")
-                                            alert("Message sent successfully!")
-
-                                            // Clear the message box after successful send
-                                            if (messageBox) {
-                                              messageBox.value = ""
-                                            }
-                                          } catch (error) {
-                                            console.error("Error sending message:", error)
-
-                                            // Fallback: Try with a simpler approach
-                                            try {
-                                              const fallbackUrl = `https://script.google.com/macros/s/AKfycbzglXDLfXYUhO4nXY_U8oS5xhWCBgeVaLWyowHDz6umohEVhm29XsxllauxAAg-hJ2i/exec?claimId=${encodeURIComponent(claim.claimId)}&sender=${encodeURIComponent("Cost Management")}&receiver=${encodeURIComponent("Settlements")}&message=${encodeURIComponent(message.trim())}`
-
-                                              window.open(fallbackUrl, "_blank")
-                                              alert("Message sent via fallback method. Please check the new tab.")
-
-                                              if (messageBox) {
-                                                messageBox.value = ""
-                                              }
-                                            } catch (fallbackError) {
-                                              console.error("Fallback method also failed:", fallbackError)
-                                              alert("Failed to send message. Please try again or contact support.")
-                                            }
-                                          } finally {
-                                            if (sendButton) {
-                                              sendButton.disabled = false
-                                              sendButton.textContent = "Send"
-                                            }
-                                          }
-                                        }}
-                                      >
-                                        Send
-                                      </Button>
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        className="border-blue-500 text-blue-600 hover:bg-blue-50 bg-transparent px-3"
-                                        onClick={() => fetchReplies(claim.claimId)}
-                                        disabled={loadingReplies[claim.claimId]}
-                                      >
-                                        {loadingReplies[claim.claimId] ? "Loading..." : "View Reply"}
-                                      </Button>
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        className="border-purple-500 text-purple-600 hover:bg-purple-50 bg-transparent px-3"
-                                        onClick={() =>
-                                          window.open(
-                                            "https://docs.google.com/spreadsheets/d/1bBFiupPJMeCfNnEiIIiuTYmaStBddMhFUr6fSfEHKMs/edit?gid=0#gid=0",
-                                            "_blank",
-                                          )
-                                        }
-                                      >
-                                        Communication
-                                      </Button>
-                                    </div>
-
-                                    {/* Display replies */}
-                                    {claim.claimId && showReplies[claim.claimId] && replies[claim.claimId] && (
-                                      <div className="mt-2 p-3 bg-gray-50 border border-gray-200 rounded-md">
-                                        <div className="flex items-center justify-between mb-2">
-                                          <h4 className="text-sm font-semibold text-gray-700">
-                                            Replies from Settlements
-                                          </h4>
-                                          <Button
-                                            size="sm"
-                                            variant="ghost"
-                                            className="h-6 w-6 p-0"
-                                            onClick={() => toggleReplies(claim.claimId)}
-                                          >
-                                            <X className="h-3 w-3" />
-                                          </Button>
-                                        </div>
-                                        {replies[claim.claimId].length > 0 ? (
-                                          <div className="space-y-2 max-h-40 overflow-y-auto">
-                                            {replies[claim.claimId].map((reply, idx) => (
-                                              <div
-                                                key={idx}
-                                                className="text-xs p-2 border-l-2 border-blue-400 bg-blue-50"
-                                              >
-                                                <div className="flex justify-between">
-                                                  <span className="font-medium text-blue-700">
-                                                    {reply.sender || "Settlements"}
-                                                  </span>
-                                                  <span className="text-gray-500">
-                                                    {new Date(reply.timestamp).toLocaleString()}
-                                                  </span>
-                                                </div>
-                                                <p className="mt-1 text-gray-700">{reply.message}</p>
-                                              </div>
-                                            ))}
-                                          </div>
-                                        ) : (
-                                          <p className="text-xs text-gray-500">No replies from settlements yet.</p>
-                                        )}
-                                      </div>
-                                    )}
-                                  </div>
-                                </TableCell>
                               </TableRow>
                             ))}
                           </TableBody>
@@ -3851,42 +3854,7 @@ Generated on: ${new Date().toLocaleString()}`
                   </CardContent>
                 </Card>
 
-                {/* Bulk Actions */}
-                <Card className={isReceivable ? "border-green-200" : "border-red-200"}>
-                  <CardHeader>
-                    <CardTitle className={`text-lg ${isReceivable ? "text-green-700" : "text-red-700"}`}>
-                      Bulk Actions - {isReceivable ? "Receivable" : "Payable"} Claims
-                    </CardTitle>
-                    <CardDescription>
-                      Perform actions on multiple {isReceivable ? "receivable" : "payable"} claims at once
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        variant="outline"
-                        className={`${isReceivable ? "border-green-500 text-green-600 hover:bg-green-50" : "border-red-500 text-red-600 hover:bg-red-50"} bg-transparent`}
-                      >
-                        <CheckCircle className="h-4 w-4 mr-2" />
-                        {isReceivable ? "Email All Selected" : "Process All Selected"}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="border-blue-500 text-blue-600 hover:bg-blue-50 bg-transparent"
-                      >
-                        <Download className="h-4 w-4 mr-2" />
-                        {isReceivable ? "Download All PDFs" : "Download Internal PDFs"}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="border-purple-500 text-purple-600 hover:bg-purple-50 bg-transparent"
-                      >
-                        <Target className="h-4 w-4 mr-2" />
-                        {isReceivable ? "Schedule Delivery" : "Assign to Processor"}
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
+
               </div>
             )
           }
@@ -3903,19 +3871,7 @@ Generated on: ${new Date().toLocaleString()}`
                         comprehensive claim documents and dispatch via email.
                       </CardDescription>
                     </div>
-                    <div className="flex space-x-2">
-                      <Button
-                        variant="outline"
-                        className="border-teal-500 text-teal-600 hover:bg-teal-50 bg-transparent"
-                      >
-                        <RefreshCw className="h-4 w-4 mr-2" />
-                        Refresh Data
-                      </Button>
-                      <Button className="bg-teal-500 hover:bg-teal-600 text-white">
-                        <Download className="h-4 w-4 mr-2" />
-                        Export Issuance Report
-                      </Button>
-                    </div>
+
                   </div>
                 </CardHeader>
                 <CardContent>
@@ -3964,19 +3920,6 @@ Generated on: ${new Date().toLocaleString()}`
                         }`}
                       >
                         <span>{tab.label}</span>
-                        <Badge
-                          className={`${
-                            issuanceSubTab === tab.id
-                              ? tab.id === "receivable-claims"
-                                ? "bg-white text-green-600 hover:bg-white"
-                                : "bg-white text-red-600 hover:bg-white"
-                              : tab.id === "receivable-claims"
-                                ? "bg-green-100 text-green-700"
-                                : "bg-red-100 text-red-700"
-                          }`}
-                        >
-                          {tab.count}
-                        </Badge>
                       </button>
                     ))}
                   </nav>
@@ -3988,88 +3931,694 @@ Generated on: ${new Date().toLocaleString()}`
             </div>
           )
         case "claim-settlement": {
-          // Dropdown state
-          const [selectedClaimType, setSelectedClaimType] = useState<'receivable' | 'payable'>('receivable');
+          // Use the SAME data source as Claim Issuance tab
+          const allSettlementSourceData =
+            uploadedData.length > 0
+              ? uploadedData.map((row, index) => {
+                  // Helper function to safely convert to number
+                  const safeNumber = (value: any, defaultValue = 0): number => {
+                    if (value === null || value === undefined || value === "") return defaultValue
+                    const num =
+                      typeof value === "string" ? Number.parseFloat(value.replace(/[,$]/g, "")) : Number(value)
+                    return isNaN(num) ? defaultValue : num
+                  }
 
-          // Classify claims from Firebase
-          const receivableClaims = interestClaimsData.filter((row: any) => {
-            const type = fieldMapping.claimType && row[fieldMapping.claimType]
-              ? row[fieldMapping.claimType]
-              : row.claimType || row.claim_type || determineClaimType(row) || "";
-            return type === 'Receivable';
+                  // Helper function to find value from multiple possible column names
+                  const findValue = (row: any, possibleNames: string[], defaultValue: any = "") => {
+                    for (const name of possibleNames) {
+                      if (row[name] !== undefined && row[name] !== null && row[name] !== "") {
+                        return row[name]
+                      }
+                    }
+                    return defaultValue
+                  }
+
+                  const item = {
+                    claimId: `CLM-${String(index + 1).padStart(6, "0")}`,
+                    tradeId: findValue(
+                      row,
+                      ["Trade ID", "TradeID", "trade_id", "ID"],
+                      `TRD-${String(index + 1).padStart(6, "0")}`,
+                    ),
+                    clientId: `CLI-${String(index + 1).padStart(6, "0")}`,
+                    counterparty: findValue(
+                      row,
+                      ["Counterparty", "Counter Party", "counterparty", "Broker"],
+                      "Unknown",
+                    ),
+                    tradeDate: findValue(
+                      row,
+                      ["Trade Date", "TradeDate", "trade_date", "Date"],
+                      new Date().toISOString().split("T")[0],
+                    ),
+                    tradeType: findValue(
+                      row,
+                      ["Trade Type", "TradeType", "trade_type", "Type", "Product Type"],
+                      "Unknown",
+                    ),
+                    tradeValue: safeNumber(
+                      findValue(row, [
+                        "Trade Value",
+                        "TradeValue",
+                        "trade_value",
+                        "Amount",
+                        "Principal Amount",
+                        "Notional Amount",
+                        "Value",
+                      ]),
+                    ),
+                    currency: findValue(
+                      row,
+                      ["Currency", "CCY", "currency", "Ccy", "Base Currency", "Deal Currency"],
+                      "USD",
+                    ),
+                    pnlCalculated: safeNumber(
+                      findValue(row, [
+                        "PnL",
+                        "PnL Calculated",
+                        "pnl_calculated",
+                        "Profit Loss",
+                        "P&L",
+                        "PnlCalculated",
+                        "FX Gain Loss",
+                        "FXGainLoss",
+                      ]),
+                    ),
+                    fxRateUsed: safeNumber(
+                      findValue(row, ["FX Rate", "FX Rate Used", "fx_rate", "Exchange Rate", "FXRate", "Rate"]),
+                      1.0,
+                    ),
+                    costCenter: findValue(
+                      row,
+                      ["Cost Center", "CostCenter", "cost_center", "Department", "Business Unit", "Cost Centre"],
+                      "N/A",
+                    ),
+                    confirmationStatus:
+                      uploadedData.length > 0
+                        ? uploadedData[index]?.["Confirmation Status"] ||
+                          uploadedData[index]?.["ConfirmationStatus"] ||
+                          "Pending"
+                        : index % 3 === 0
+                          ? "Failed"
+                          : index % 3 === 1
+                            ? "Pending"
+                            : "Confirmed",
+                    expenseApprovalStatus:
+                      uploadedData.length > 0
+                        ? uploadedData[index]?.["Expense Approval Status"] ||
+                          uploadedData[index]?.["ExpenseApprovalStatus"] ||
+                          "Pending"
+                        : index % 4 === 0
+                          ? "Rejected"
+                          : index % 4 === 1
+                            ? "Pending"
+                            : "Approved",
+                    costAllocationStatus:
+                      uploadedData.length > 0
+                        ? uploadedData[index]?.["Cost Allocation Status"] ||
+                          uploadedData[index]?.["CostAllocationStatus"] ||
+                          "Pending"
+                        : index % 5 === 0
+                          ? "Failed"
+                          : index % 5 === 1
+                            ? "Pending"
+                            : "Allocated",
+                    interestAmount: 0, // Placeholder, will be calculated below
+                  }
+
+                  return item
+                })
+              : [
+                  // Sample data when no file is uploaded (same as Claim Issuance)
+                  {
+                    claimId: "CLM-000001",
+                    tradeId: "TRD-000001",
+                    clientId: "CLI-000001",
+                    counterparty: "Goldman Sachs",
+                    tradeDate: "2024-01-15",
+                    tradeType: "FX Forward",
+                    tradeValue: 1500000,
+                    currency: "USD",
+                    pnlCalculated: 25000,
+                    fxRateUsed: 1.085,
+                    costCenter: "FX Trading",
+                    confirmationStatus: "Failed",
+                    expenseApprovalStatus: "Rejected",
+                    costAllocationStatus: "Failed",
+                    interestAmount: 0,
+                  },
+                  {
+                    claimId: "CLM-000002",
+                    tradeId: "TRD-000002",
+                    clientId: "CLI-000002",
+                    counterparty: "JP Morgan",
+                    tradeDate: "2024-01-16",
+                    tradeType: "Interest Rate Swap",
+                    tradeValue: 2300000,
+                    currency: "EUR",
+                    pnlCalculated: -15000,
+                    fxRateUsed: 0.925,
+                    costCenter: "Fixed Income",
+                    confirmationStatus: "Pending",
+                    expenseApprovalStatus: "Pending",
+                    costAllocationStatus: "Failed",
+                    interestAmount: 0,
+                  },
+                  {
+                    claimId: "CLM-000003",
+                    tradeId: "TRD-000003",
+                    clientId: "CLI-000003",
+                    counterparty: "Morgan Stanley",
+                    tradeDate: "2024-01-17",
+                    tradeType: "Equity Option",
+                    tradeValue: 850000,
+                    currency: "GBP",
+                    pnlCalculated: 8500,
+                    fxRateUsed: 1.265,
+                    costCenter: "Equity Derivatives",
+                    confirmationStatus: "Failed",
+                    expenseApprovalStatus: "Approved",
+                    costAllocationStatus: "Allocated",
+                    interestAmount: 0,
+                  },
+                  {
+                    claimId: "CLM-000004",
+                    tradeId: "TRD-000004",
+                    clientId: "CLI-000004",
+                    counterparty: "Deutsche Bank",
+                    tradeDate: "2024-01-18",
+                    tradeType: "Credit Default Swap",
+                    tradeValue: 5000000,
+                    currency: "USD",
+                    pnlCalculated: 75000,
+                    fxRateUsed: 1.0,
+                    costCenter: "Credit Trading",
+                    confirmationStatus: "Confirmed",
+                    expenseApprovalStatus: "Approved",
+                    costAllocationStatus: "Allocated",
+                    interestAmount: 0,
+                  },
+                  {
+                    claimId: "CLM-000005",
+                    tradeId: "TRD-000005",
+                    clientId: "CLI-000005",
+                    counterparty: "Barclays",
+                    tradeDate: "2024-01-19",
+                    tradeType: "Bond Purchase",
+                    tradeValue: 3200000,
+                    currency: "JPY",
+                    pnlCalculated: 45000,
+                    fxRateUsed: 148.5,
+                    costCenter: "Fixed Income",
+                    confirmationStatus: "Pending",
+                    expenseApprovalStatus: "Pending",
+                    costAllocationStatus: "Pending",
+                    interestAmount: 0,
+                  },
+                  {
+                    claimId: "CLM-000006",
+                    tradeId: "TRD-000006",
+                    clientId: "CLI-000006",
+                    counterparty: "Credit Suisse",
+                    tradeDate: "2024-01-20",
+                    tradeType: "Currency Swap",
+                    tradeValue: 1800000,
+                    currency: "CHF",
+                    pnlCalculated: -12000,
+                    fxRateUsed: 0.915,
+                    costCenter: "FX Trading",
+                    confirmationStatus: "Rejected",
+                    expenseApprovalStatus: "Failed",
+                    costAllocationStatus: "Rejected",
+                    interestAmount: 0,
+                  },
+                  {
+                    claimId: "CLM-000007",
+                    tradeId: "TRD-000007",
+                    clientId: "CLI-000007",
+                    counterparty: "UBS",
+                    tradeDate: "2024-01-21",
+                    tradeType: "Commodity Future",
+                    tradeValue: 950000,
+                    currency: "USD",
+                    pnlCalculated: 18500,
+                    fxRateUsed: 1.0,
+                    costCenter: "Commodities",
+                    confirmationStatus: "Pending",
+                    expenseApprovalStatus: "Under Review",
+                    costAllocationStatus: "Pending",
+                    interestAmount: 0,
+                  },
+                  {
+                    claimId: "CLM-000008",
+                    tradeId: "TRD-000008",
+                    clientId: "CLI-000008",
+                    counterparty: "HSBC",
+                    tradeDate: "2024-01-22",
+                    tradeType: "FX Swap",
+                    tradeValue: 2750000,
+                    currency: "EUR",
+                    pnlCalculated: -18000,
+                    fxRateUsed: 1.095,
+                    costCenter: "Emerging Markets Desk",
+                    interestAmount: 0,
+                  },
+                ]
+
+          // Calculate interest amount for each item
+          allSettlementSourceData.forEach(item => {
+            const claimReceiptData = uploadedData.length > 0
+              ? uploadedData.map((row, idx) => {
+                  const findValue = (row: any, possibleNames: string[], defaultValue: any = "") => {
+                    for (const name of possibleNames) {
+                      if (row[name] !== undefined && row[name] !== null && row[name] !== "") {
+                        return row[name]
+                      }
+                    }
+                    return defaultValue
+                  }
+                  const valueDate = findValue(
+                    row,
+                    ["Value Date", "ValueDate", "value_date"],
+                    new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+                  )
+                  const settlementDate = findValue(
+                    row,
+                    ["Settlement Date", "SettlementDate", "settlement_date", "Settlement"],
+                    new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+                  )
+                                                     const valueDateObj = new Date(valueDate)
+                   const settlementDateObj = new Date(settlementDate)
+                   const diffTime = settlementDateObj.getTime() - valueDateObj.getTime()
+                   const slaBreach = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+                   const safeNumber = (value: any, defaultValue = 0): number => {
+                     if (value === null || value === undefined || value === "") return defaultValue
+                     const num = typeof value === "string" ? Number.parseFloat(value.replace(/[,$]/g, "")) : Number(value)
+                     return isNaN(num) ? defaultValue : num
+                   }
+                   const notionalAmount = safeNumber(
+                     findValue(row, [
+                       "Notional Amount",
+                       "NotionalAmount", 
+                       "notional_amount",
+                       "Trade Value",
+                       "TradeValue",
+                       "trade_value",
+                       "Amount",
+                       "Principal Amount",
+                       "Value"
+                     ]),
+                     1000000
+                   )
+                   return {
+                     tradeId: findValue(row, ["Trade ID", "TradeID", "trade_id", "TradeId", "id"], `TRD-${String(idx + 1).padStart(6, "0")}`),
+                     slaBreach: slaBreach,
+                     notionalAmount: notionalAmount
+                   }
+                })
+                                             : [
+                   { tradeId: "TRD-000001", slaBreach: 1, notionalAmount: 1500000 },
+                   { tradeId: "TRD-000002", slaBreach: 2, notionalAmount: 2300000 },
+                   { tradeId: "TRD-000003", slaBreach: 3, notionalAmount: 850000 },
+                   { tradeId: "TRD-000004", slaBreach: 1, notionalAmount: 5000000 },
+                   { tradeId: "TRD-000005", slaBreach: 2, notionalAmount: 3200000 },
+                   { tradeId: "TRD-000006", slaBreach: 3, notionalAmount: 1800000 },
+                   { tradeId: "TRD-000007", slaBreach: 1, notionalAmount: 950000 },
+                   { tradeId: "TRD-000008", slaBreach: 3, notionalAmount: 2750000 }
+                 ]
+
+                                         const matchingClaimReceipt = claimReceiptData.find(claim => claim.tradeId === item.tradeId)
+             const slaBreach = matchingClaimReceipt ? matchingClaimReceipt.slaBreach : 0
+             const notionalAmount = matchingClaimReceipt ? matchingClaimReceipt.notionalAmount : item.tradeValue || 0
+            
+            const seed = item.claimId ? (item.claimId.charCodeAt(0) + item.claimId.charCodeAt(1)) : 100;
+            const interestRate = ((seed % 50) / 10 + 2) / 100; // Example: 2.0% to 7.0%
+
+            if (slaBreach > 1) {
+              item.interestAmount = interestRate * notionalAmount * (slaBreach / 365);
+            } else {
+              item.interestAmount = 0;
+            }
           });
-          const payableClaims = interestClaimsData.filter((row: any) => {
-            const type = fieldMapping.claimType && row[fieldMapping.claimType]
-              ? row[fieldMapping.claimType]
-              : row.claimType || row.claim_type || determineClaimType(row) || "";
-            return type === 'Payable';
-          });
+
+          // Use the SAME classification logic as Claim Issuance tab
+          const receivableClaims = allSettlementSourceData.filter((item) => {
+            const pnl = Number(item.pnlCalculated)
+            const confirmationStatus = item.confirmationStatus?.toLowerCase() || "pending"
+            const expenseApprovalStatus = item.expenseApprovalStatus?.toLowerCase() || "pending"
+            const costAllocationStatus = item.costAllocationStatus?.toLowerCase() || "pending"
+
+            // Check for settlement issues, rejections, or failures
+            const hasIssues =
+              confirmationStatus === "failed" ||
+              confirmationStatus === "rejected" ||
+              expenseApprovalStatus === "failed" ||
+              expenseApprovalStatus === "rejected" ||
+              costAllocationStatus === "failed" ||
+              costAllocationStatus === "rejected"
+
+            // Check for pending settlement (settlement delay)
+            const hasPendingSettlement =
+              confirmationStatus === "pending" || expenseApprovalStatus === "pending" || costAllocationStatus === "pending"
+
+            // Apply classification logic
+            if (pnl > 0 && (hasIssues || hasPendingSettlement)) {
+              return true
+            } else if (pnl > 0 && hasPendingSettlement) {
+              return true
+            }
+
+            return false
+          })
+
+          const payableClaims = allSettlementSourceData.filter((item) => {
+            const pnl = Number(item.pnlCalculated)
+            const costAllocationStatus = item.costAllocationStatus?.toLowerCase() || "pending"
+
+            // Apply classification logic
+            if (pnl < 0 && (costAllocationStatus === "failed" || costAllocationStatus === "rejected")) {
+              return true
+            }
+
+            return false
+          })
           const claimsToShow = selectedClaimType === 'receivable' ? receivableClaims : payableClaims;
+
+          // Helper functions for settlement tracking (using the same data structure as Claim Issuance)
+          const getClaimId = (row: any) => {
+            return row.claimId || `CLM-${Math.random().toString(36).substr(2, 9)}`;
+          };
+
+          const getClaimType = (row: any) => {
+            const pnl = Number(row.pnlCalculated)
+            const confirmationStatus = row.confirmationStatus?.toLowerCase() || "pending"
+            const expenseApprovalStatus = row.expenseApprovalStatus?.toLowerCase() || "pending"
+            const costAllocationStatus = row.costAllocationStatus?.toLowerCase() || "pending"
+
+            // Check for settlement issues, rejections, or failures
+            const hasIssues =
+              confirmationStatus === "failed" ||
+              confirmationStatus === "rejected" ||
+              expenseApprovalStatus === "failed" ||
+              expenseApprovalStatus === "rejected" ||
+              costAllocationStatus === "failed" ||
+              costAllocationStatus === "rejected"
+
+            // Check for pending settlement (settlement delay)
+            const hasPendingSettlement =
+              confirmationStatus === "pending" || expenseApprovalStatus === "pending" || costAllocationStatus === "pending"
+
+            // Apply classification logic
+            if (pnl > 0 && (hasIssues || hasPendingSettlement)) {
+              return "Receivable"
+            } else if (pnl > 0 && hasPendingSettlement) {
+              return "Receivable"
+            } else if (pnl < 0 && (costAllocationStatus === "failed" || costAllocationStatus === "rejected")) {
+              return "Payable"
+            }
+
+            return "N/A"
+          };
+
+          const getPnL = (row: any) => {
+            return Number(row.pnlCalculated) || 0;
+          };
+
+          const getInterestAmount = (row: any) => {
+            // Use the same interest calculation logic as the registration tab
+            // Get claimId to match with registration data
+            const claimId = getClaimId(row);
+            
+            // Get slaBreach and notionalAmount data (same as registration tab)
+            const claimReceiptData = uploadedData.length > 0
+              ? uploadedData.map((row, idx) => {
+                  const findValue = (row: any, possibleNames: string[], defaultValue: any = "") => {
+                    for (const name of possibleNames) {
+                      if (row[name] !== undefined && row[name] !== null && row[name] !== "") {
+                        return row[name]
+                      }
+                    }
+                    return defaultValue
+                  }
+
+                  const safeNumber = (value: any, defaultValue = 0): number => {
+                    if (value === null || value === undefined || value === "") return defaultValue
+                    const num = typeof value === "string" ? Number.parseFloat(value.replace(/[,$]/g, "")) : Number(value)
+                    return isNaN(num) ? defaultValue : num
+                  }
+
+                  const tradeDate = new Date(findValue(row, ["Trade Date", "TradeDate", "trade_date"], "2024-01-15"))
+                  const valueDate = new Date(findValue(row, ["Value Date", "ValueDate", "value_date"], "2024-01-16"))
+                  const settlementDate = new Date(findValue(row, ["Settlement Date", "SettlementDate", "settlement_date"], "2024-01-17"))
+
+                  const timeDiff = settlementDate.getTime() - valueDate.getTime()
+                  const diffDays = Math.ceil(timeDiff / (1000 * 3600 * 24))
+
+                  const notionalAmount = safeNumber(findValue(row, [
+                    "Notional Amount", "NotionalAmount", "notional_amount", "Trade Value", "TradeValue", "trade_value", "Amount", "Principal Amount", "Value"
+                  ]))
+
+                  return {
+                    tradeId: findValue(row, ["Trade ID", "TradeID", "trade_id", "TradeId", "id"], `TRD-${String(idx + 1).padStart(6, "0")}`),
+                    slaBreach: diffDays,
+                    notionalAmount: notionalAmount
+                  }
+                })
+              : [
+                  { tradeId: "TRD-000001", slaBreach: 1, notionalAmount: 1500000 },
+                  { tradeId: "TRD-000002", slaBreach: 2, notionalAmount: 2300000 },
+                  { tradeId: "TRD-000003", slaBreach: 3, notionalAmount: 850000 },
+                  { tradeId: "TRD-000004", slaBreach: 1, notionalAmount: 5000000 },
+                  { tradeId: "TRD-000005", slaBreach: 2, notionalAmount: 3200000 },
+                  { tradeId: "TRD-000006", slaBreach: 3, notionalAmount: 1800000 },
+                  { tradeId: "TRD-000007", slaBreach: 1, notionalAmount: 950000 },
+                  { tradeId: "TRD-000008", slaBreach: 3, notionalAmount: 2750000 }
+                ]
+
+            const matchingClaimReceipt = claimReceiptData.find(claim => claim.tradeId === row.tradeId)
+            const slaBreach = matchingClaimReceipt ? matchingClaimReceipt.slaBreach : 0
+            const notionalAmount = matchingClaimReceipt ? matchingClaimReceipt.notionalAmount : row.tradeValue || 0
+
+            // Use same interest rate calculation as registration tab
+            const seed = claimId ? (claimId.charCodeAt(0) + claimId.charCodeAt(1)) : 100;
+            const interestRate = ((seed % 50) / 10 + 2) / 100;
+            
+            if (slaBreach > 1) {
+              const interestAmount = interestRate * notionalAmount * (slaBreach / 365);
+              return interestAmount;
+            } else {
+              return 0;
+            }
+          };
+
+          const getClientName = (row: any) => {
+            return row.counterparty || "Unknown";
+          };
+
+          const getCurrency = (row: any) => {
+            return row.currency || "USD";
+          };
+
+          const handleStatusChange = (claimId: string, status: string) => {
+            setSettlementStatuses(prev => ({ ...prev, [claimId]: status }));
+          };
+
+          const handleDateChange = (claimId: string, date: string) => {
+            setSettlementDates(prev => ({ ...prev, [claimId]: date }));
+          };
+
+          const handleAmountChange = (claimId: string, amount: number) => {
+            setSettlementAmounts(prev => ({ ...prev, [claimId]: amount }));
+          };
+
           return (
             <div className="space-y-6">
-              <Card>
+            <Card>
                 <CardHeader>
-                  <CardTitle>Claim Settlement</CardTitle>
+                  <CardTitle>Claim Settlement Tracking</CardTitle>
                   <CardDescription>
-                    Select claim type to view Claim IDs and Claim Types. Other columns are empty for now.
+                    Track settlement status for classified claims from previous subtabs. All receivable and payable claims are automatically carried forward.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="mb-4">
-                    <Select value={selectedClaimType} onValueChange={value => setSelectedClaimType(value as 'receivable' | 'payable')}>
-                      <SelectTrigger className="w-64">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="receivable">Receivable Claims</SelectItem>
-                        <SelectItem value="payable">Payable Claims</SelectItem>
-                      </SelectContent>
-                    </Select>
+                  {/* Settlement Summary */}
+                  {claimsToShow.length > 0 && (
+                    <Card className="mb-6">
+                      <CardHeader>
+                        <CardTitle>Settlement Summary</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                          <div className="text-center p-4 bg-blue-50 rounded-lg">
+                            <div className="text-2xl font-bold text-blue-600">
+                              {claimsToShow.length}
+                            </div>
+                            <div className="text-sm text-gray-600">Total Claims</div>
+                          </div>
+                          <div className="text-center p-4 bg-yellow-50 rounded-lg">
+                            <div className="text-2xl font-bold text-yellow-600">
+                              {claimsToShow.filter((row: any) => {
+                                const claimId = getClaimId(row);
+                                return (settlementStatuses[claimId] || 'Pending') === 'Pending';
+                              }).length}
+                            </div>
+                            <div className="text-sm text-gray-600">Pending</div>
+                          </div>
+                          <div className="text-center p-4 bg-green-50 rounded-lg">
+                            <div className="text-2xl font-bold text-green-600">
+                              {claimsToShow.filter((row: any) => {
+                                const claimId = getClaimId(row);
+                                return (settlementStatuses[claimId] || 'Pending') === 'Settled';
+                              }).length}
+                            </div>
+                            <div className="text-sm text-gray-600">Settled</div>
+                          </div>
+                          <div className="text-center p-4 bg-gray-50 rounded-lg">
+                            <div className="text-2xl font-bold text-gray-600">
+                              ${claimsToShow.reduce((total: number, row: any) => {
+                                const claimId = getClaimId(row);
+                                return total + (settlementAmounts[claimId] || getInterestAmount(row));
+                              }, 0).toLocaleString()}
+                            </div>
+                            <div className="text-sm text-gray-600">Total Amount</div>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  <div className="mb-6 flex items-center justify-between">
+                    <div className="flex items-center space-x-4">
+                      <Select value={selectedClaimType} onValueChange={value => setSelectedClaimType(value as 'receivable' | 'payable')}>
+                        <SelectTrigger className="w-64">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="receivable">Receivable Claims ({receivableClaims.length})</SelectItem>
+                          <SelectItem value="payable">Payable Claims ({payableClaims.length})</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-center space-x-4">
+                      <div className="text-sm text-gray-600">
+                        Total {selectedClaimType === 'receivable' ? 'Receivable' : 'Payable'} Claims: {claimsToShow.length}
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          // Auto-map fields for settlement
+                          const firebaseHeaders = interestClaimsData.length > 0 ? Object.keys(interestClaimsData[0]) : [];
+                          const autoMappedFields = createSettlementFieldMapping(firebaseHeaders);
+                          setFieldMapping(prev => ({ ...prev, ...autoMappedFields }));
+                          alert(`Auto-mapped ${Object.keys(autoMappedFields).length} fields. Check the mapping below.`);
+                        }}
+                      >
+                        Auto Map Fields
+                      </Button>
+                    </div>
                   </div>
+                  
                   <div className="overflow-x-auto">
                     <Table>
                       <TableHeader>
                         <TableRow>
                           <TableHead>Claim ID</TableHead>
                           <TableHead>Claim Type</TableHead>
-                          {[...Array(7)].map((_, idx) => (
-                            <TableHead key={idx}>Column {idx + 3}</TableHead>
-                          ))}
+                          <TableHead>Client</TableHead>
+                          <TableHead>Interest Amount</TableHead>
+                          <TableHead>Currency</TableHead>
+                          <TableHead>Settlement Status</TableHead>
+                          <TableHead>Settlement Date</TableHead>
+                          <TableHead>Settlement Amount</TableHead>
+                          <TableHead>Actions</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {claimsToShow.map((row: any, idx: number) => (
-                          <TableRow key={idx}>
-                            <TableCell>{getClaimId(row)}</TableCell>
-                            <TableCell>{getClaimType(row)}</TableCell>
-                            {[...Array(7)].map((_, i) => (
-                              <TableCell key={i}></TableCell>
-                            ))}
-                          </TableRow>
-                        ))}
+                        {claimsToShow.map((row: any, idx: number) => {
+                          const claimId = getClaimId(row);
+                          const currentStatus = settlementStatuses[claimId] || 'Pending';
+                          const currentDate = settlementDates[claimId] || '';
+                          const currentAmount = settlementAmounts[claimId] || getInterestAmount(row);
+                          
+                          return (
+                            <TableRow key={idx}>
+                              <TableCell className="font-medium">{claimId}</TableCell>
+                              <TableCell>
+                                <Badge variant={getClaimType(row) === 'Receivable' ? 'default' : 'secondary'}>
+                                  {getClaimType(row)}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>{getClientName(row)}</TableCell>
+                              <TableCell className={getInterestAmount(row) >= 0 ? 'text-green-600' : 'text-red-600'}>
+                                ${Math.abs(getInterestAmount(row)).toLocaleString()}
+                              </TableCell>
+                              <TableCell>{getCurrency(row)}</TableCell>
+                              <TableCell>
+                                <Select value={currentStatus} onValueChange={(value) => handleStatusChange(claimId, value)}>
+                                  <SelectTrigger className="w-32">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="Pending">Pending</SelectItem>
+                                    <SelectItem value="In Progress">In Progress</SelectItem>
+                                    <SelectItem value="Settled">Settled</SelectItem>
+                                    <SelectItem value="Rejected">Rejected</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </TableCell>
+                              <TableCell>
+                                <input
+                                  type="date"
+                                  value={currentDate}
+                                  onChange={(e) => handleDateChange(claimId, e.target.value)}
+                                  className="w-32 px-2 py-1 border rounded text-sm"
+                                />
+                              </TableCell>
+                              <TableCell>
+                                <input
+                                  type="number"
+                                  value={currentAmount}
+                                  onChange={(e) => handleAmountChange(claimId, Number(e.target.value))}
+                                  className="w-24 px-2 py-1 border rounded text-sm"
+                                  step="0.01"
+                                />
+                              </TableCell>
+                              <TableCell>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => {
+                                    // Mark as settled
+                                    handleStatusChange(claimId, 'Settled');
+                                    if (!currentDate) {
+                                      handleDateChange(claimId, new Date().toISOString().split('T')[0]);
+                                    }
+                                  }}
+                                  disabled={currentStatus === 'Settled'}
+                                >
+                                  Mark Settled
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
                       </TableBody>
                     </Table>
                     {claimsToShow.length === 0 && (
-                      <div className="text-gray-500 text-center py-8">No claims found for this type.</div>
+                      <div className="text-gray-500 text-center py-8">
+                        No {selectedClaimType} claims found. Upload data in the Data Upload tab and classify claims in the Claim Registration subtab first.
+                      </div>
                     )}
                   </div>
-                </CardContent>
-              </Card>
+              </CardContent>
+            </Card>
+
+
             </div>
           );
         }
-        case "claim-follow-up":
-          return (
-            <Card>
-              <CardContent className="text-center py-12">
-                <FileText className="mx-auto h-12 w-12 text-gray-400 mb-4" />
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">Claim Follow-up</h2>
-                <p className="text-gray-600 dark:text-gray-400">
-                  Follow up on claim status and handle post-settlement activities.
-                </p>
-              </CardContent>
-            </Card>
-          )
+
         default:
           return renderClaimsSubTabContent()
       }
@@ -4084,21 +4633,21 @@ Generated on: ${new Date().toLocaleString()}`
         case "allocated":
         case "approved":
           return (
-            <Badge variant="outline" className="border-green-500 text-green-600">
+            <Badge variant="outline" className="border-green-500 text-green-600 bg-green-50">
               {status}
             </Badge>
           )
         case "pending":
         case "under review":
           return (
-            <Badge variant="outline" className="border-yellow-500 text-yellow-600">
+            <Badge variant="outline" className="border-yellow-500 text-yellow-600 bg-yellow-50">
               {status}
             </Badge>
           )
         case "failed":
         case "rejected":
           return (
-            <Badge variant="outline" className="border-red-500 text-red-600">
+            <Badge variant="outline" className="border-red-500 text-red-600 bg-red-50">
               {status}
             </Badge>
           )
@@ -4109,6 +4658,24 @@ Generated on: ${new Date().toLocaleString()}`
             </Badge>
           )
       }
+    }
+
+    // Function to categorize settlement claims based on business rules  
+    const categorizeSettlementClaim = (item: any): string => {
+      const categories: string[] = []
+
+      // Check status-based categorization
+      if (item.confirmationStatus?.toLowerCase() === "failed") {
+        categories.push("Failed Confirmation")
+      }
+      if (item.expenseApprovalStatus?.toLowerCase() === "rejected") {
+        categories.push("Expense Rejected")
+      }
+      if (item.costAllocationStatus?.toLowerCase() === "failed") {
+        categories.push("Cost Allocation Failed")
+      }
+
+      return categories.length > 0 ? categories.join(", ") : "No Issues"
     }
 
     // --- Claim Settlement Table with Auto Field Mapping from Firebase ---
@@ -4196,9 +4763,11 @@ Generated on: ${new Date().toLocaleString()}`
                 <button
                   key={tab.id}
                   onClick={() => setClaimsSubTab(tab.id)}
-                  className={`whitespace-nowrap py-2 px-4 border-b-2 font-medium text-sm transition-colors rounded-t-lg ${
+                  className={`whitespace-nowrap py-2 px-4 border-b-2 font-medium text-sm transition-colors rounded-t-lg flex items-center space-x-2 ${
                     claimsSubTab === tab.id
-                      ? "border-teal-500 text-teal-600 dark:text-teal-400 bg-teal-50 dark:bg-teal-900/20"
+                      ? tab.id === "receivable-claims"
+                        ? "border-green-500 text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20"
+                        : "border-red-500 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20"
                       : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
                   }`}
                 >
@@ -4250,12 +4819,12 @@ Generated on: ${new Date().toLocaleString()}`
       {/* Collapsible Sidebar */}
       <div
         className={`${
-          sidebarCollapsed ? "w-16" : "w-64"
-        } transition-all duration-300 ease-in-out bg-white dark:bg-gray-800 shadow-lg flex flex-col`}
+                  sidebarCollapsed ? "w-16" : "w-64"
+      } transition-all duration-300 ease-in-out bg-sidebar shadow-lg flex flex-col`}
       >
         {/* Sidebar Header */}
         <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
-          {!sidebarCollapsed && <h1 className="text-xl font-bold text-gray-900 dark:text-white">Interest Claims</h1>}
+          {!sidebarCollapsed && <h1 className="text-xl font-bold text-sidebar-foreground">Interest Claims</h1>}
           <Button
             variant="ghost"
             size="sm"
@@ -4276,8 +4845,8 @@ Generated on: ${new Date().toLocaleString()}`
                 onClick={() => setActiveTab(item.id)}
                 className={`w-full flex items-center px-3 py-2 rounded-lg text-left transition-colors ${
                   activeTab === item.id
-                    ? "bg-teal-100 text-teal-700 dark:bg-teal-900 dark:text-teal-300"
-                    : "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/80 hover:bg-sidebar-accent/20 hover:text-sidebar-foreground"
                 }`}
                 title={sidebarCollapsed ? item.label : undefined}
               >
@@ -4290,8 +4859,8 @@ Generated on: ${new Date().toLocaleString()}`
 
         {/* Sidebar Footer */}
         {!sidebarCollapsed && (
-          <div className="p-4 border-t border-gray-200 dark:border-gray-700">
-            <div className="text-xs text-gray-500 dark:text-gray-400">
+          <div className="p-4 border-t border-sidebar-border/20">
+            <div className="text-xs text-sidebar-foreground/60">
               <div>Version 1.0.0</div>
               <div>© 2024 CMTA Portal</div>
             </div>

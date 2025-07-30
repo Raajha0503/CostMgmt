@@ -102,12 +102,19 @@ export function InvoiceDocument({ trade }: InvoiceDocumentProps) {
   const disputeTypes = getTradeDisputeTypes()
   const primaryDisputeType = disputeTypes[0] || null
 
+  // Helper function to safely convert to number
+  const safeToNumber = (value: any): number | null => {
+    if (value === null || value === undefined || value === '') return null
+    const num = typeof value === 'string' ? parseFloat(value) : Number(value)
+    return isNaN(num) ? null : num
+  }
+
   // Extract actual costs from dataset
   const getActualCosts = (trade: TradeData) => {
     if (trade.dataSource === "equity") {
       return {
-        commission: trade.commission || null,
-        taxes: trade.taxes || null,
+        commission: safeToNumber(trade.commission),
+        taxes: safeToNumber(trade.taxes),
         custodyFee: null, // Not available in equity dataset
         settlementCost: null, // Not available in equity dataset
         brokerageFee: null, // Not available in equity dataset
@@ -115,11 +122,11 @@ export function InvoiceDocument({ trade }: InvoiceDocumentProps) {
     } else {
       // FX dataset
       return {
-        commission: trade.commissionAmount || trade.commission || null,
+        commission: safeToNumber(trade.commissionAmount || trade.commission),
         taxes: null, // Not available in FX dataset
-        custodyFee: trade.custodyFee || null,
-        settlementCost: trade.settlementCost || null,
-        brokerageFee: trade.brokerageFee || null,
+        custodyFee: safeToNumber(trade.custodyFee),
+        settlementCost: safeToNumber(trade.settlementCost),
+        brokerageFee: safeToNumber(trade.brokerageFee),
       }
     }
   }
@@ -236,11 +243,11 @@ export function InvoiceDocument({ trade }: InvoiceDocumentProps) {
   // Calculate total from display costs
   const calculateTotal = () => {
     let total = 0
-    if (displayCosts.commission) total += displayCosts.commission
-    if (displayCosts.taxes) total += displayCosts.taxes
-    if (displayCosts.custodyFee) total += displayCosts.custodyFee
-    if (displayCosts.settlementCost) total += displayCosts.settlementCost
-    if (displayCosts.brokerageFee) total += displayCosts.brokerageFee
+    total += displayCosts.commission || 0
+    total += displayCosts.taxes || 0
+    total += displayCosts.custodyFee || 0
+    total += displayCosts.settlementCost || 0
+    total += displayCosts.brokerageFee || 0
     return total
   }
 
@@ -456,7 +463,7 @@ export function InvoiceDocument({ trade }: InvoiceDocumentProps) {
                   </td>
                   <td className="border border-gray-300 p-4 text-center text-gray-600">Per Trade</td>
                   <td className="border border-gray-300 p-4 text-right font-mono">
-                    ${displayCosts.commission.toFixed(2)}
+                    ${(displayCosts.commission || 0).toFixed(2)}
                   </td>
                 </tr>
               )}
@@ -470,7 +477,7 @@ export function InvoiceDocument({ trade }: InvoiceDocumentProps) {
                     )}
                   </td>
                   <td className="border border-gray-300 p-4 text-center text-gray-600">Statutory</td>
-                  <td className="border border-gray-300 p-4 text-right font-mono">${displayCosts.taxes.toFixed(2)}</td>
+                  <td className="border border-gray-300 p-4 text-right font-mono">${(displayCosts.taxes || 0).toFixed(2)}</td>
                 </tr>
               )}
 
@@ -484,7 +491,7 @@ export function InvoiceDocument({ trade }: InvoiceDocumentProps) {
                   </td>
                   <td className="border border-gray-300 p-4 text-center text-gray-600">Asset Based</td>
                   <td className="border border-gray-300 p-4 text-right font-mono">
-                    ${displayCosts.custodyFee.toFixed(2)}
+                    ${(displayCosts.custodyFee || 0).toFixed(2)}
                   </td>
                 </tr>
               )}
@@ -499,7 +506,7 @@ export function InvoiceDocument({ trade }: InvoiceDocumentProps) {
                   </td>
                   <td className="border border-gray-300 p-4 text-center text-gray-600">Per Transaction</td>
                   <td className="border border-gray-300 p-4 text-right font-mono">
-                    ${displayCosts.settlementCost.toFixed(2)}
+                    ${(displayCosts.settlementCost || 0).toFixed(2)}
                   </td>
                 </tr>
               )}
@@ -515,7 +522,7 @@ export function InvoiceDocument({ trade }: InvoiceDocumentProps) {
                   </td>
                   <td className="border border-gray-300 p-4 text-center text-gray-600">Percentage</td>
                   <td className="border border-gray-300 p-4 text-right font-mono">
-                    ${displayCosts.brokerageFee.toFixed(2)}
+                    ${(displayCosts.brokerageFee || 0).toFixed(2)}
                   </td>
                 </tr>
               )}

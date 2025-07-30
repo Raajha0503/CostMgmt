@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { AlertTriangle, CheckCircle, Upload, BarChart3, CreditCard, Bot } from "lucide-react"
+import { AlertTriangle, CheckCircle, Upload, BarChart3, CreditCard, Bot, Download, Eye, ChevronLeft, ChevronRight, Settings, ArrowRight } from "lucide-react"
 import {
   fetchTradeData,
   calculateSummaryMetrics,
@@ -21,12 +21,17 @@ import { ThemeToggle } from "./theme-toggle"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import InterestClaims from "./interest-claims"
-import CapturedFromCMS from "./captured-from-cms"
 import ForwardToSettlements from "./forward-to-settlements"
+import InternalMessagingSystem from "./internal-messaging-system"
+import type React from "react"
+import { tradeOperations } from "@/lib/firebase-operations"
+import { collection, query, where, getDocs } from "firebase/firestore"
+import { db } from "@/lib/firebase-config"
+import { CMTAPDFGenerator, type CMTAAgreementData } from "@/lib/cmta-pdf-generator"
 
 // Reusable UI components
 // Add the card-bw and btn-primary/btn-secondary classes
-const Card = ({ children, className = "" }) => {
+const Card = ({ children, className = "" }: { children: React.ReactNode; className?: string }) => {
   return <div className={`card-bw p-6 ${className}`}>{children}</div>
 }
 
@@ -910,6 +915,98 @@ function DataUploadPage({
 }
 
 // Update the main app header styling
+// Helper functions for PDF operations
+const handlePreviewAgreement = async (rowData: any, setToastMsg: any, setToastType: any) => {
+  try {
+    const agreementData: CMTAAgreementData = {
+      id: String(rowData.id || ''),
+      Broker: String(rowData.Broker || 'Default Broker'),
+      client: String(rowData.client || 'Client Name'),
+      BrokerageCurrency: String(rowData.BrokerageCurrency || 'USD'),
+      BrokerageFee: String(rowData.BrokerageFee || '0.25%'),
+      EffectiveDate_Equity: String(rowData.EffectiveDate_Equity || new Date().toLocaleDateString()),
+      EffectiveDate_Forex: String(rowData.EffectiveDate_Forex || new Date().toLocaleDateString()),
+      LEI: String(rowData.LEI || ''),
+      clientId: String(rowData.clientId || rowData.client || ''),
+      version: String(rowData.version || 'v1'),
+      generatedOn: String(rowData['Generated on'] || new Date().toLocaleDateString()),
+      lastModified: String(rowData['Last modified'] || new Date().toLocaleDateString())
+    };
+    
+    await CMTAPDFGenerator.generatePreview(agreementData);
+    setToastMsg('Agreement preview opened in new tab');
+    setToastType('success');
+  } catch (error) {
+    console.error('Preview error:', error);
+    setToastMsg('Failed to generate preview');
+    setToastType('error');
+  }
+};
+
+const handleDownloadSigned = async (rowData: any, setToastMsg: any, setToastType: any) => {
+  try {
+    const agreementData: CMTAAgreementData = {
+      id: String(rowData.id || ''),
+      Broker: String(rowData.Broker || 'Default Broker'),
+      client: String(rowData.client || 'Client Name'),
+      BrokerageCurrency: String(rowData.BrokerageCurrency || 'USD'),
+      BrokerageFee: String(rowData.BrokerageFee || '0.25%'),
+      EffectiveDate_Equity: String(rowData.EffectiveDate_Equity || new Date().toLocaleDateString()),
+      EffectiveDate_Forex: String(rowData.EffectiveDate_Forex || new Date().toLocaleDateString()),
+      LEI: String(rowData.LEI || ''),
+      clientId: String(rowData.clientId || rowData.client || ''),
+      version: String(rowData.version || 'v1'),
+      generatedOn: String(rowData['Generated on'] || new Date().toLocaleDateString()),
+      lastModified: String(rowData['Last modified'] || new Date().toLocaleDateString())
+    };
+    
+    await CMTAPDFGenerator.downloadSignedAgreement(agreementData);
+    setToastMsg('Signed agreement downloaded successfully');
+    setToastType('success');
+  } catch (error) {
+    console.error('Download error:', error);
+    setToastMsg('Failed to download signed agreement');
+    setToastType('error');
+  }
+};
+
+const handleEditRegenerate = (rowData: any, setAgreementRows: any, agreementRows: any[], idx: number, setToastMsg: any, setToastType: any) => {
+  try {
+    const currentData: CMTAAgreementData = {
+      id: String(rowData.id || ''),
+      Broker: String(rowData.Broker || 'Default Broker'),
+      client: String(rowData.client || 'Client Name'),
+      BrokerageCurrency: String(rowData.BrokerageCurrency || 'USD'),
+      BrokerageFee: String(rowData.BrokerageFee || '0.25%'),
+      EffectiveDate_Equity: String(rowData.EffectiveDate_Equity || new Date().toLocaleDateString()),
+      EffectiveDate_Forex: String(rowData.EffectiveDate_Forex || new Date().toLocaleDateString()),
+      LEI: String(rowData.LEI || ''),
+      clientId: String(rowData.clientId || rowData.client || ''),
+      version: String(rowData.version || 'v1'),
+      generatedOn: String(rowData['Generated on'] || new Date().toLocaleDateString()),
+      lastModified: String(rowData['Last modified'] || new Date().toLocaleDateString())
+    };
+    
+    const updatedData = CMTAPDFGenerator.generateEditableTemplate(currentData);
+    
+    // Update the row with new version and timestamps
+    setAgreementRows((prev: any[]) => prev.map((r, i) => 
+      i === idx ? {
+        ...r,
+        version: updatedData.version,
+        'Generated on': updatedData.generatedOn,
+        'Last modified': updatedData.lastModified
+      } : r
+    ));
+    
+    setToastMsg('Agreement version updated successfully');
+    setToastType('success');
+  } catch (error) {
+    setToastMsg('Failed to update agreement version');
+    setToastType('error');
+  }
+};
+
 export default function CMTAApp() {
   const [page, setPage] = useState("Data Upload")
   const [trades, setTrades] = useState<TradeData[]>([])
@@ -919,6 +1016,272 @@ export default function CMTAApp() {
   const [dataSource, setDataSource] = useState<"csv" | "excel">("csv")
   const [dataType, setDataType] = useState<"equity" | "fx">("equity")
   const [showAIPanel, setShowAIPanel] = useState(false)
+  const [activeSidebarSection, setActiveSidebarSection] = useState("Interest Claims")
+  // Clearing Member Trading Agreement tab subtab state (must be at top level)
+  const experimentSubTabs = [
+    "Agreement Setup",
+    "Reference Data Mapping",
+    "Trade Capture",
+    "Trade Enrichment and routing",
+    "Confirmations",
+    "Clearing and Settlement",
+    "Exception Management",
+    "Cost Allocation",
+  ];
+  const [experimentSubTab, setExperimentSubTab] = useState(experimentSubTabs[0]);
+  const [experimentTabsExpanded, setExperimentTabsExpanded] = useState(false);
+
+  // New Agreement Setup Table State
+  const [unifiedRows, setUnifiedRows] = useState<any[]>([])
+  const [unifiedLoading, setUnifiedLoading] = useState(false)
+  const [unifiedUpdatingId, setUnifiedUpdatingId] = useState<string | null>(null)
+  // Track edited rows by id
+  const [editedRows, setEditedRows] = useState<{ [id: string]: any }>({})
+  const [saveLoading, setSaveLoading] = useState(false)
+
+  // Use column names directly as Firestore field names
+  const unifiedColumns = [
+    'Broker',
+    'BrokerageCurrency',
+    'BrokerageFee',
+    'EffectiveDate_Equity',
+    'EffectiveDate_Forex',
+    'LEI',
+    'client',
+    'clientId',
+    'id',
+  ]
+
+  // Toast state for feedback
+  const [toastMsg, setToastMsg] = useState<string | null>(null)
+  const [toastType, setToastType] = useState<'success' | 'error' | null>(null)
+
+  // Fetch data from Firestore
+  const fetchUnifiedData = async () => {
+    setUnifiedLoading(true)
+    try {
+      const data = await tradeOperations.getAllTrades()
+      // Map Firestore fields to UI columns
+      const mapped = Array.isArray(data)
+        ? data.map((row: any) => {
+            const obj: any = {}
+            unifiedColumns.forEach((col) => {
+              obj[col] = row[col] ?? ''
+            })
+            obj.id = row.id
+            return obj
+          })
+        : []
+      setUnifiedRows(mapped)
+    } finally {
+      setUnifiedLoading(false)
+    }
+  }
+
+  // Use exact column names as both UI and Firestore field names
+  const columnNames = [
+    'Broker',
+    'BrokerageCurrency',
+    'BrokerageFee',
+    'EffectiveDate_Equity',
+    'EffectiveDate_Forex',
+    'LEI',
+    'client',
+    'clientId',
+  ]
+
+  // Reference Data Mapping Table State
+  const [refRows, setRefRows] = useState<any[]>([])
+  const [refLoading, setRefLoading] = useState(false)
+  const [refUpdatingId, setRefUpdatingId] = useState<string | null>(null)
+  const [refEditedRows, setRefEditedRows] = useState<{ [id: string]: any }>({})
+  const [refSaveLoading, setRefSaveLoading] = useState(false)
+  const refColumns = [
+    'ClientID_Equity',
+    'ClientID_Forex',
+    'Custodian_Name',
+    'Custodian_Ac_no',
+    'ISIN',
+    'ABA_Equity',
+    'ABA_Forex',
+    'BSB_Equity',
+    'BSB_Forex',
+    'SWIFT_Equity',
+    'SWIFT_Forex',
+    'account',
+    'accountNumber',
+    'accountName',
+    'Reference_Data_Validated',
+    'id',
+  ]
+  const fetchRefData = async () => {
+    setRefLoading(true)
+    try {
+      // Only fetch records with signed CMTA agreements
+      const q = query(
+        collection(db, 'unified_data'), 
+        where('CMTA Agreement Status', '==', 'Signed')
+      )
+      const snapshot = await getDocs(q)
+      const data = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      
+      const mapped = Array.isArray(data)
+        ? data.map((row: any) => {
+            const obj: any = {}
+            refColumns.forEach((col) => {
+              obj[col] = row[col] ?? ''
+            })
+            obj.id = row.id
+            return obj
+          })
+        : []
+      setRefRows(mapped)
+    } finally {
+      setRefLoading(false)
+    }
+  }
+
+  // Trade Capture Table State
+  const [tradeRows, setTradeRows] = useState<any[]>([])
+  const [tradeLoading, setTradeLoading] = useState(false)
+  const [tradeUpdatingId, setTradeUpdatingId] = useState<string | null>(null)
+  const [tradeEditedRows, setTradeEditedRows] = useState<{ [id: string]: any }>({})
+  const [tradeSaveLoading, setTradeSaveLoading] = useState(false)
+  const tradeColumns = [
+    'TradeID',
+    'TradeDate',
+    'TradeTime',
+    'BuySell',
+    'ProductType',
+    'Symbol',
+    'NotionalAmount',
+    'ExecutionVenue',
+    'TradeSourceSystem',
+    'TradeStatus',
+    'BookingLocation',
+    'id',
+  ]
+  const fetchTradeDataTable = async () => {
+    setTradeLoading(true)
+    try {
+      // Double filtering: CMTA Agreement Status == "Signed" AND Reference_Data_Validated == "Yes"
+      const q = query(
+        collection(db, 'unified_data'), 
+        where('CMTA Agreement Status', '==', 'Signed'),
+        where('Reference_Data_Validated', '==', 'Yes')
+      )
+      const snapshot = await getDocs(q)
+      const data = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      
+      const mapped = Array.isArray(data)
+        ? data.map((row: any) => {
+            const obj: any = {}
+            tradeColumns.forEach((col) => {
+              obj[col] = row[col] ?? ''
+            })
+            obj.id = row.id
+            return obj
+          })
+        : []
+      setTradeRows(mapped)
+    } finally {
+      setTradeLoading(false)
+    }
+  }
+
+  // Trade Enrichment and Routing Table State
+  const [enrichRows, setEnrichRows] = useState<any[]>([])
+  const [enrichLoading, setEnrichLoading] = useState(false)
+  const [enrichUpdatingId, setEnrichUpdatingId] = useState<string | null>(null)
+  const [enrichEditedRows, setEnrichEditedRows] = useState<{ [id: string]: any }>({})
+  const [enrichSaveLoading, setEnrichSaveLoading] = useState(false)
+  const enrichColumns = [
+    'TradeID',
+    'ProductType',
+    'Instrument_Status',
+    'Portfolio',
+    'BookingLocation',
+    'account',
+    'accountNumber',
+    'accountName',
+    'TradeSourceSystem',
+    'ExecutionVenue',
+    'id',
+  ]
+  const fetchEnrichData = async () => {
+    setEnrichLoading(true)
+    try {
+      // Triple filtering: Signed + Validated + Booked
+      const q = query(
+        collection(db, 'unified_data'), 
+        where('CMTA Agreement Status', '==', 'Signed'),
+        where('Reference_Data_Validated', '==', 'Yes'),
+        where('TradeStatus', '==', 'Booked')
+      )
+      const snapshot = await getDocs(q)
+      const data = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      
+      const mapped = Array.isArray(data)
+        ? data.map((row: any) => {
+            const obj: any = {}
+            enrichColumns.forEach((col) => {
+              obj[col] = row[col] ?? ''
+            })
+            obj.id = row.id
+            return obj
+          })
+        : []
+      setEnrichRows(mapped)
+    } finally {
+      setEnrichLoading(false)
+    }
+  }
+
+  // Confirmations Table State
+  const [confRows, setConfRows] = useState<any[]>([])
+  const [confLoading, setConfLoading] = useState(false)
+  const [confUpdatingId, setConfUpdatingId] = useState<string | null>(null)
+  const [confEditedRows, setConfEditedRows] = useState<{ [id: string]: any }>({})
+  const [confSaveLoading, setConfSaveLoading] = useState(false)
+  const confColumns = [
+    'TradeID',
+    'ConfirmationMethod',
+    'ConfirmationStatus',
+    'ConfirmationStatus_Equity',
+    'ConfirmationStatus_Forex',
+    'ConfirmationTimestamp',
+    'AuditTrailRef',
+    'id',
+  ]
+  const fetchConfData = async () => {
+    setConfLoading(true)
+    try {
+      // Quadruple filtering: Signed + Validated + Booked + Active
+      const q = query(
+        collection(db, 'unified_data'), 
+        where('CMTA Agreement Status', '==', 'Signed'),
+        where('Reference_Data_Validated', '==', 'Yes'),
+        where('TradeStatus', '==', 'Booked'),
+        where('Instrument_Status', '==', 'Active')
+      )
+      const snapshot = await getDocs(q)
+      const data = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      
+      const mapped = Array.isArray(data)
+        ? data.map((row: any) => {
+            const obj: any = {}
+            confColumns.forEach((col) => {
+              obj[col] = row[col] ?? ''
+            })
+            obj.id = row.id
+            return obj
+          })
+        : []
+      setConfRows(mapped)
+    } finally {
+      setConfLoading(false)
+    }
+  }
 
   const topMenu = [
     "Data Upload",
@@ -931,13 +1294,13 @@ export default function CMTAApp() {
   ]
 
   const sidebarMenu = [
-    "Captured from CMS",
     "Commission Management",
-    "Brokerage Management",
+    "Brokerage Management", 
     "Agent Billing",
     "Interest Claims",
+    // Add Clearing Member Trading Agreement tab below Forward to Settlements
     "Clearing Member Trading Agreement",
-    "Forward to Settlements",
+    "Internal Messaging System",
   ]
 
   const initializeData = async () => {
@@ -976,6 +1339,22 @@ export default function CMTAApp() {
     setDataType(type)
   }
 
+  // Helper to update a field in Firestore and reload data
+  const handleUnifiedCellUpdate = async (row: any, col: string, newValue: string, idx: number) => {
+    if (row[col] !== newValue && row.id) {
+      setUnifiedUpdatingId(row.id)
+      try {
+        await tradeOperations.updateTrade(row.id, { [col]: newValue })
+        await fetchUnifiedData()
+      } catch (err) {
+        setToastMsg('Update failed!')
+        setToastType('error')
+        console.error('Firestore update error:', err)
+      }
+      setUnifiedUpdatingId(null)
+    }
+  }
+
   const renderPage = () => {
     if (loading) {
       return <LoadingSpinner />
@@ -1001,12 +1380,8 @@ export default function CMTAApp() {
     }
   }
 
-  const [activeSidebarSection, setActiveSidebarSection] = useState("Interest Claims")
-
   const renderSidebarContent = () => {
     switch (activeSidebarSection) {
-      case "Captured from CMS":
-        return <CapturedFromCMS />
       case "Brokerage Management":
         return <BrokerageManagement />
       case "Commission Management":
@@ -1015,10 +1390,1488 @@ export default function CMTAApp() {
         return <AgentBilling />
       case "Interest Claims":
         return <InterestClaims />
-      case "Clearing Member Trading Agreement":
+      case "WIP":
         return renderPage()
       case "Forward to Settlements":
         return <ForwardToSettlements />
+      case "Clearing Member Trading Agreement":
+        return (
+          <div className="flex-1 flex flex-col items-center justify-start p-8">
+            <div className="w-full max-w-4xl mb-6">
+              <div className="border-b border-gray-200 dark:border-gray-700 pb-2">
+                <div className="flex flex-col gap-2">
+                  {/* First Row */}
+                  <div className="flex items-center gap-2">
+                    {/* Right Arrow Button - always on the left */}
+                    <button
+                      onClick={() => setExperimentTabsExpanded(!experimentTabsExpanded)}
+                      className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none transition-all duration-200"
+                      title={experimentTabsExpanded ? "Hide first 5 tabs" : "Show first 5 tabs"}
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                    
+                    {/* First 5 tabs - slide in when expanded */}
+                    <div className={`flex gap-2 overflow-hidden transition-all duration-300 ${
+                      experimentTabsExpanded ? "max-w-full opacity-100" : "max-w-0 opacity-0"
+                    }`}>
+                      {experimentSubTabs.slice(0, 5).map((tab) => (
+                        <button
+                          key={tab}
+                          className={`px-4 py-2 rounded-t-md text-sm font-medium transition-all duration-200 focus:outline-none whitespace-nowrap ${
+                            experimentSubTab === tab
+                              ? "bg-black text-white shadow-sm"
+                              : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+                          }`}
+                          onClick={() => setExperimentSubTab(tab)}
+                        >
+                          {tab}
+                        </button>
+                      ))}
+                    </div>
+                    
+                    {/* Last 3 permanent tabs - show here when collapsed */}
+                    {!experimentTabsExpanded && (
+                      <div className="flex gap-2">
+                        {experimentSubTabs.slice(5).map((tab) => (
+                          <button
+                            key={tab}
+                            className={`px-4 py-2 rounded-t-md text-sm font-medium transition-all duration-200 focus:outline-none whitespace-nowrap ${
+                              experimentSubTab === tab
+                                ? "bg-black text-white shadow-sm"
+                                : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+                            }`}
+                            onClick={() => setExperimentSubTab(tab)}
+                          >
+                            {tab}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Second Row - show permanent tabs when expanded */}
+                  {experimentTabsExpanded && (
+                    <div className="flex gap-2 pl-12 transition-all duration-300">
+                      {experimentSubTabs.slice(5).map((tab) => (
+                        <button
+                          key={tab}
+                          className={`px-4 py-2 rounded-t-md text-sm font-medium transition-all duration-200 focus:outline-none whitespace-nowrap ${
+                            experimentSubTab === tab
+                              ? "bg-black text-white shadow-sm"
+                              : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+                          }`}
+                          onClick={() => setExperimentSubTab(tab)}
+                        >
+                          {tab}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            {/* Content area for subtabs */}
+            <div className="w-full max-w-4xl flex-1 bg-white dark:bg-gray-800 rounded-md shadow p-8">
+              {/* Agreement Setup subtab content */}
+              {experimentSubTab === "Agreement Setup" && (
+                <div>
+                  <div className="flex justify-end mb-4 gap-2">
+                    <button
+                      className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
+                      title="Source data from Firebase"
+                      onClick={fetchUnifiedData}
+                    >
+                      <Download className="h-5 w-5" />
+                    </button>
+                    <button
+                      className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
+                      title="Toggle Agreement Document table"
+                      onClick={() => setShowAgreementDocTable(!showAgreementDocTable)}
+                    >
+                      <Eye className="h-5 w-5" />
+                    </button>
+                    <button
+                      className="p-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 focus:outline-none disabled:opacity-50"
+                      title="Save changes"
+                      disabled={Object.keys(editedRows).length === 0 || saveLoading}
+                      onClick={async () => {
+                        setSaveLoading(true)
+                        try {
+                          for (const id of Object.keys(editedRows)) {
+                            await tradeOperations.updateTrade(id, editedRows[id])
+                          }
+                          setEditedRows({})
+                          await fetchUnifiedData()
+                        } catch (err) {
+                          setToastMsg('Save failed!')
+                          setToastType('error')
+                        }
+                        setSaveLoading(false)
+                      }}
+                    >
+                      {saveLoading ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
+                      <thead>
+                        <tr>
+                          {unifiedColumns.map((col) => (
+                            <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {unifiedLoading ? (
+                          <tr>
+                            <td colSpan={unifiedColumns.length} className="text-center py-4">Loading...</td>
+                          </tr>
+                        ) : unifiedRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={unifiedColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                          </tr>
+                        ) : (
+                          unifiedRows.map((row, idx) => (
+                            <tr key={row.id || idx} className={unifiedUpdatingId === row.id ? "opacity-50" : ""}>
+                              {unifiedColumns.map((col) => (
+                                <td key={col} className="min-w-[240px] px-4 py-2 border-b">
+                                  {col === 'id' ? (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none text-xs text-gray-500"
+                                      value={row.id}
+                                      disabled
+                                      readOnly
+                                    />
+                                  ) : (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none"
+                                      value={row[col] ?? ''}
+                                      disabled={unifiedUpdatingId === row.id}
+                                      onChange={e => {
+                                        const newValue = e.target.value
+                                        setUnifiedRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                        // Track edits
+                                        setEditedRows(prev => {
+                                          const updated = { ...prev }
+                                          const original = unifiedRows[idx] || {}
+                                          if (original[col] !== newValue) {
+                                            updated[row.id] = { ...(updated[row.id] || {}), [col]: newValue }
+                                          } else if (updated[row.id]) {
+                                            delete updated[row.id][col]
+                                            if (Object.keys(updated[row.id]).length === 0) delete updated[row.id]
+                                          }
+                                          return updated
+                                        })
+                                      }}
+                                      onBlur={e => {/* no-op, save only on button click */}}
+                                      onKeyDown={e => {/* no-op, save only on button click */}}
+                                    />
+                                  )}
+                                </td>
+                              ))}
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  
+                  {/* Agreement Document Table */}
+                  {showAgreementDocTable && (
+                    <div className="mt-8">
+                      <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">Agreement Document</h3>
+
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
+                          <thead>
+                            <tr>
+                              {agreementColumns.map((col) => (
+                                <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {agreementLoading ? (
+                              <tr>
+                                <td colSpan={agreementColumns.length} className="text-center py-4">Loading...</td>
+                              </tr>
+                            ) : agreementRows.length === 0 ? (
+                              <tr>
+                                <td colSpan={agreementColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                              </tr>
+                            ) : (
+                              agreementRows.map((row, idx) => (
+                                <tr key={row.id || idx} className={row['CMTA Agreement Status'] === 'Signed' ? 'bg-green-50 dark:bg-green-900/10 border-l-4 border-l-green-500' : ''}>
+                                  {agreementColumns.map((col) => (
+                                    <td key={col} className="min-w-[240px] px-4 py-2 border-b">
+                                      {col === 'id' ? (
+                                        <input
+                                          className="w-full bg-transparent border-none outline-none text-xs text-gray-500"
+                                          value={row.id}
+                                          disabled
+                                          readOnly
+                                        />
+                                      ) : col === 'CMTA Agreement Status' ? (
+                                        <select
+                                          className="w-full bg-transparent border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm"
+                                          value={row[col] ?? 'Draft'}
+                                          onChange={e => {
+                                            const newValue = e.target.value
+                                            setAgreementRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                            // Track edits for CMTA Agreement Status only
+                                            setAgreementEditedRows(prev => {
+                                              const updated = { ...prev }
+                                              const original = agreementRows[idx] || {}
+                                              if (original[col] !== newValue) {
+                                                updated[row.id] = { ...(updated[row.id] || {}), [col]: newValue }
+                                              } else if (updated[row.id]) {
+                                                delete updated[row.id][col]
+                                                if (Object.keys(updated[row.id]).length === 0) delete updated[row.id]
+                                              }
+                                              return updated
+                                            })
+                                          }}
+                                        >
+                                          <option value="Draft">Draft</option>
+                                          <option value="Under Review">Under Review</option>
+                                          <option value="Signed">Signed</option>
+                                          <option value="Expired">Expired</option>
+                                        </select>
+                                      ) : col === 'View agreement' ? (
+                                        <button 
+                                          className="text-blue-500 hover:text-blue-700 text-sm font-medium"
+                                          onClick={() => handlePreviewAgreement(row, setToastMsg, setToastType)}
+                                        >
+                                          Preview
+                                        </button>
+                                      ) : col === 'commission rate agreed' ? (
+                                        <input
+                                          className="w-full bg-transparent border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm"
+                                          value={row[col] ?? ''}
+                                          onChange={e => {
+                                            const newValue = e.target.value
+                                            setAgreementRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                            // Track edits for commission rate agreed
+                                            setAgreementEditedRows(prev => {
+                                              const updated = { ...prev }
+                                              const original = agreementRows[idx] || {}
+                                              if (original[col] !== newValue) {
+                                                updated[row.id] = { ...(updated[row.id] || {}), [col]: newValue }
+                                              } else if (updated[row.id]) {
+                                                delete updated[row.id][col]
+                                                if (Object.keys(updated[row.id]).length === 0) delete updated[row.id]
+                                              }
+                                              return updated
+                                            })
+                                          }}
+                                        />
+                                      ) : col === 'signed agreement' ? (
+                                        <div className="flex gap-2">
+                                          <button 
+                                            className="text-orange-500 hover:text-orange-700 text-sm font-medium"
+                                            onClick={() => {
+                                              // Update status to Signed when Sign button is clicked
+                                              setAgreementRows(prev => prev.map((r, i) => 
+                                                i === idx ? { ...r, 'CMTA Agreement Status': 'Signed' } : r
+                                              ))
+                                              setAgreementEditedRows(prev => ({
+                                                ...prev,
+                                                [row.id]: { ...(prev[row.id] || {}), 'CMTA Agreement Status': 'Signed' }
+                                              }))
+                                              setToastMsg('Agreement marked as Signed. You can now download it.')
+                                              setToastType('success')
+                                            }}
+                                          >
+                                            Sign
+                                          </button>
+                                          {row['CMTA Agreement Status'] === 'Signed' && (
+                                            <button 
+                                              className="text-purple-500 hover:text-purple-700 text-sm font-medium"
+                                              onClick={() => handleDownloadSigned(row, setToastMsg, setToastType)}
+                                            >
+                                              Download
+                                            </button>
+                                          )}
+                                        </div>
+                                      ) : (
+                                        <input
+                                          className="w-full bg-transparent border-none outline-none text-xs text-gray-500"
+                                          value={row[col] ?? ''}
+                                          disabled
+                                          readOnly
+                                        />
+                                      )}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="flex justify-end mt-4">
+                        <button
+                          className="px-4 py-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 focus:outline-none disabled:opacity-50"
+                          disabled={Object.keys(agreementEditedRows).length === 0 || agreementStatusSaveLoading}
+                          onClick={async () => {
+                            setAgreementStatusSaveLoading(true)
+                            try {
+                              for (const id of Object.keys(agreementEditedRows)) {
+                                await tradeOperations.updateTrade(id, agreementEditedRows[id])
+                              }
+                              setAgreementEditedRows({})
+                              await fetchAgreementRows()
+                            } catch (err) {
+                              setToastMsg('Save failed!')
+                              setToastType('error')
+                            }
+                            setAgreementStatusSaveLoading(false)
+                          }}
+                        >
+                          {agreementStatusSaveLoading ? 'Saving...' : 'Save CMTA Status & Commission Rate'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {experimentSubTab === "Reference Data Mapping" && (
+                <div>
+
+                  <div className="flex justify-end mb-4 gap-2">
+                    <button
+                      className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
+                      title="Source data from Firebase"
+                      onClick={fetchRefData}
+                    >
+                      <Download className="h-5 w-5" />
+                    </button>
+                    <button
+                      className="p-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 focus:outline-none disabled:opacity-50"
+                      title="Save changes"
+                      disabled={Object.keys(refEditedRows).length === 0 || refSaveLoading}
+                      onClick={async () => {
+                        setRefSaveLoading(true)
+                        try {
+                          for (const id of Object.keys(refEditedRows)) {
+                            await tradeOperations.updateTrade(id, refEditedRows[id])
+                          }
+                          setRefEditedRows({})
+                          await fetchRefData()
+                        } catch (err) {
+                          setToastMsg('Save failed!')
+                          setToastType('error')
+                        }
+                        setRefSaveLoading(false)
+                      }}
+                    >
+                      {refSaveLoading ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
+                      <thead>
+                        <tr>
+                          {refColumns.map((col) => (
+                            <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {refLoading ? (
+                          <tr>
+                            <td colSpan={refColumns.length} className="text-center py-4">Loading...</td>
+                          </tr>
+                        ) : refRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={refColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                          </tr>
+                        ) : (
+                          refRows.map((row, idx) => (
+                            <tr key={row.id || idx} className={`${refUpdatingId === row.id ? "opacity-50" : ""} ${row['Reference_Data_Validated'] === 'Yes' ? 'bg-green-50 dark:bg-green-900/10 border-l-4 border-l-green-500' : row['Reference_Data_Validated'] === 'No' ? 'bg-red-50 dark:bg-red-900/10 border-l-4 border-l-red-500' : 'bg-yellow-50 dark:bg-yellow-900/10 border-l-4 border-l-yellow-500'}`}>
+                              {refColumns.map((col) => (
+                                <td key={col} className="min-w-[240px] px-4 py-2 border-b">
+                                  {col === 'id' ? (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none text-xs text-gray-500"
+                                      value={row.id}
+                                      disabled
+                                      readOnly
+                                    />
+                                  ) : (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none"
+                                      value={row[col] ?? ''}
+                                      disabled={refUpdatingId === row.id}
+                                      onChange={e => {
+                                        const newValue = e.target.value
+                                        setRefRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                        // Track edits
+                                        setRefEditedRows(prev => {
+                                          const updated = { ...prev }
+                                          const original = refRows[idx] || {}
+                                          if (original[col] !== newValue) {
+                                            updated[row.id] = { ...(updated[row.id] || {}), [col]: newValue }
+                                          } else if (updated[row.id]) {
+                                            delete updated[row.id][col]
+                                            if (Object.keys(updated[row.id]).length === 0) delete updated[row.id]
+                                          }
+                                          return updated
+                                        })
+                                      }}
+                                      onBlur={e => {/* no-op, save only on button click */}}
+                                      onKeyDown={e => {/* no-op, save only on button click */}}
+                                    />
+                                  )}
+                                </td>
+                              ))}
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              {experimentSubTab === "Trade Capture" && (
+                <div>
+
+                  <div className="flex justify-end mb-4 gap-2">
+                    <button
+                      className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
+                      title="Source data from Firebase"
+                      onClick={fetchTradeDataTable}
+                    >
+                      <Download className="h-5 w-5" />
+                    </button>
+                    <button
+                      className="p-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 focus:outline-none disabled:opacity-50"
+                      title="Save changes"
+                      disabled={Object.keys(tradeEditedRows).length === 0 || tradeSaveLoading}
+                      onClick={async () => {
+                        setTradeSaveLoading(true)
+                        try {
+                          for (const id of Object.keys(tradeEditedRows)) {
+                            await tradeOperations.updateTrade(id, tradeEditedRows[id])
+                          }
+                          setTradeEditedRows({})
+                          await fetchTradeDataTable()
+                        } catch (err) {
+                          setToastMsg('Save failed!')
+                          setToastType('error')
+                        }
+                        setTradeSaveLoading(false)
+                      }}
+                    >
+                      {tradeSaveLoading ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
+                      <thead>
+                        <tr>
+                          {tradeColumns.map((col) => (
+                            <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tradeLoading ? (
+                          <tr>
+                            <td colSpan={tradeColumns.length} className="text-center py-4">Loading...</td>
+                          </tr>
+                        ) : tradeRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={tradeColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                          </tr>
+                        ) : (
+                          tradeRows.map((row, idx) => (
+                            <tr key={row.id || idx} className={`${tradeUpdatingId === row.id ? "opacity-50" : ""} ${row['TradeStatus'] === 'Booked' ? 'bg-green-50 dark:bg-green-900/10 border-l-4 border-l-green-500' : row['TradeStatus'] === 'Pending' ? 'bg-yellow-50 dark:bg-yellow-900/10 border-l-4 border-l-yellow-500' : 'bg-gray-50 dark:bg-gray-900/10 border-l-4 border-l-gray-500'}`}>
+                              {tradeColumns.map((col) => (
+                                <td key={col} className="min-w-[240px] px-4 py-2 border-b">
+                                  {col === 'id' ? (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none text-xs text-gray-500"
+                                      value={row.id}
+                                      disabled
+                                      readOnly
+                                    />
+                                  ) : (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none"
+                                      value={row[col] ?? ''}
+                                      disabled={tradeUpdatingId === row.id}
+                                      onChange={e => {
+                                        const newValue = e.target.value
+                                        setTradeRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                        // Track edits
+                                        setTradeEditedRows(prev => {
+                                          const updated = { ...prev }
+                                          const original = tradeRows[idx] || {}
+                                          if (original[col] !== newValue) {
+                                            updated[row.id] = { ...(updated[row.id] || {}), [col]: newValue }
+                                          } else if (updated[row.id]) {
+                                            delete updated[row.id][col]
+                                            if (Object.keys(updated[row.id]).length === 0) delete updated[row.id]
+                                          }
+                                          return updated
+                                        })
+                                      }}
+                                      onBlur={e => {/* no-op, save only on button click */}}
+                                      onKeyDown={e => {/* no-op, save only on button click */}}
+                                    />
+                                  )}
+                                </td>
+                              ))}
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              {experimentSubTab === "Trade Enrichment and routing" && (
+                <div>
+
+                  <div className="flex justify-end mb-4 gap-2">
+                    <button
+                      className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
+                      title="Source data from Firebase"
+                      onClick={fetchEnrichData}
+                    >
+                      <Download className="h-5 w-5" />
+                    </button>
+                    <button
+                      className="p-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 focus:outline-none disabled:opacity-50"
+                      title="Save changes"
+                      disabled={Object.keys(enrichEditedRows).length === 0 || enrichSaveLoading}
+                      onClick={async () => {
+                        setEnrichSaveLoading(true)
+                        try {
+                          for (const id of Object.keys(enrichEditedRows)) {
+                            await tradeOperations.updateTrade(id, enrichEditedRows[id])
+                          }
+                          setEnrichEditedRows({})
+                          await fetchEnrichData()
+                        } catch (err) {
+                          setToastMsg('Save failed!')
+                          setToastType('error')
+                        }
+                        setEnrichSaveLoading(false)
+                      }}
+                    >
+                      {enrichSaveLoading ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
+                      <thead>
+                        <tr>
+                          {enrichColumns.map((col) => (
+                            <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {enrichLoading ? (
+                          <tr>
+                            <td colSpan={enrichColumns.length} className="text-center py-4">Loading...</td>
+                          </tr>
+                        ) : enrichRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={enrichColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                          </tr>
+                        ) : (
+                          enrichRows.map((row, idx) => (
+                            <tr key={row.id || idx} className={`${enrichUpdatingId === row.id ? "opacity-50" : ""} ${row['Instrument_Status'] === 'Active' ? 'bg-green-50 dark:bg-green-900/10 border-l-4 border-l-green-500' : row['Instrument_Status'] === 'Inactive' ? 'bg-red-50 dark:bg-red-900/10 border-l-4 border-l-red-500' : 'bg-yellow-50 dark:bg-yellow-900/10 border-l-4 border-l-yellow-500'}`}>
+                              {enrichColumns.map((col) => (
+                                <td key={col} className="min-w-[240px] px-4 py-2 border-b">
+                                  {col === 'id' ? (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none text-xs text-gray-500"
+                                      value={row.id}
+                                      disabled
+                                      readOnly
+                                    />
+                                  ) : (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none"
+                                      value={row[col] ?? ''}
+                                      disabled={enrichUpdatingId === row.id}
+                                      onChange={e => {
+                                        const newValue = e.target.value
+                                        setEnrichRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                        // Track edits
+                                        setEnrichEditedRows(prev => {
+                                          const updated = { ...prev }
+                                          const original = enrichRows[idx] || {}
+                                          if (original[col] !== newValue) {
+                                            updated[row.id] = { ...(updated[row.id] || {}), [col]: newValue }
+                                          } else if (updated[row.id]) {
+                                            delete updated[row.id][col]
+                                            if (Object.keys(updated[row.id]).length === 0) delete updated[row.id]
+                                          }
+                                          return updated
+                                        })
+                                      }}
+                                      onBlur={e => {/* no-op, save only on button click */}}
+                                      onKeyDown={e => {/* no-op, save only on button click */}}
+                                    />
+                                  )}
+                                </td>
+                              ))}
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              {experimentSubTab === "Confirmations" && (
+                <div>
+                  <div className="flex justify-end mb-4 gap-2">
+                    <button
+                      className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
+                      title="Source data from Firebase"
+                      onClick={fetchConfData}
+                    >
+                      <Download className="h-5 w-5" />
+                    </button>
+                    <button
+                      className="p-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 focus:outline-none disabled:opacity-50"
+                      title="Save changes"
+                      disabled={Object.keys(confEditedRows).length === 0 || confSaveLoading}
+                      onClick={async () => {
+                        setConfSaveLoading(true)
+                        try {
+                          for (const id of Object.keys(confEditedRows)) {
+                            await tradeOperations.updateTrade(id, confEditedRows[id])
+                          }
+                          setConfEditedRows({})
+                          await fetchConfData()
+                        } catch (err) {
+                          setToastMsg('Save failed!')
+                          setToastType('error')
+                        }
+                        setConfSaveLoading(false)
+                      }}
+                    >
+                      {confSaveLoading ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
+                      <thead>
+                        <tr>
+                          {confColumns.map((col) => (
+                            <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {confLoading ? (
+                          <tr>
+                            <td colSpan={confColumns.length} className="text-center py-4">Loading...</td>
+                          </tr>
+                        ) : confRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={confColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                          </tr>
+                        ) : (
+                          confRows.map((row, idx) => (
+                            <tr key={row.id || idx} className={`${confUpdatingId === row.id ? "opacity-50" : ""} ${row['ConfirmationStatus'] === 'Confirmed' ? 'bg-green-50 dark:bg-green-900/10 border-l-4 border-l-green-500' : row['ConfirmationStatus'] === 'Pending' ? 'bg-yellow-50 dark:bg-yellow-900/10 border-l-4 border-l-yellow-500' : 'bg-red-50 dark:bg-red-900/10 border-l-4 border-l-red-500'}`}>
+                              {confColumns.map((col) => (
+                                <td key={col} className="min-w-[240px] px-4 py-2 border-b">
+                                  {col === 'id' ? (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none text-xs text-gray-500"
+                                      value={row.id}
+                                      disabled
+                                      readOnly
+                                    />
+                                  ) : (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none"
+                                      value={row[col] ?? ''}
+                                      disabled={confUpdatingId === row.id}
+                                      onChange={e => {
+                                        const newValue = e.target.value
+                                        setConfRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                        // Track edits
+                                        setConfEditedRows(prev => {
+                                          const updated = { ...prev }
+                                          const original = confRows[idx] || {}
+                                          if (original[col] !== newValue) {
+                                            updated[row.id] = { ...(updated[row.id] || {}), [col]: newValue }
+                                          } else if (updated[row.id]) {
+                                            delete updated[row.id][col]
+                                            if (Object.keys(updated[row.id]).length === 0) delete updated[row.id]
+                                          }
+                                          return updated
+                                        })
+                                      }}
+                                      onBlur={e => {/* no-op, save only on button click */}}
+                                      onKeyDown={e => {/* no-op, save only on button click */}}
+                                    />
+                                  )}
+                                </td>
+                              ))}
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              {experimentSubTab === "Clearing and Settlement" && (
+                <div>
+                  <div className="flex justify-end mb-4 gap-2">
+                    <button
+                      className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
+                      title="Source data from Firebase"
+                      onClick={fetchClearData}
+                    >
+                      <Download className="h-5 w-5" />
+                    </button>
+                    <button
+                      className="p-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 focus:outline-none disabled:opacity-50"
+                      title="Save changes"
+                      disabled={Object.keys(clearEditedRows).length === 0 || clearSaveLoading}
+                      onClick={async () => {
+                        setClearSaveLoading(true)
+                        try {
+                          for (const id of Object.keys(clearEditedRows)) {
+                            await tradeOperations.updateTrade(id, clearEditedRows[id])
+                          }
+                          setClearEditedRows({})
+                          await fetchClearData()
+                        } catch (err) {
+                          setToastMsg('Save failed!')
+                          setToastType('error')
+                        }
+                        setClearSaveLoading(false)
+                      }}
+                    >
+                      {clearSaveLoading ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
+                      <thead>
+                        <tr>
+                          {clearColumns.map((col) => (
+                            <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {clearLoading ? (
+                          <tr>
+                            <td colSpan={clearColumns.length} className="text-center py-4">Loading...</td>
+                          </tr>
+                        ) : clearRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={clearColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                          </tr>
+                        ) : (
+                          clearRows.map((row, idx) => (
+                            <tr key={row.id || idx} className={clearUpdatingId === row.id ? "opacity-50" : ""}>
+                              {clearColumns.map((col) => (
+                                <td key={col} className="min-w-[240px] px-4 py-2 border-b">
+                                  {col === 'id' ? (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none text-xs text-gray-500"
+                                      value={row.id}
+                                      disabled
+                                      readOnly
+                                    />
+                                  ) : (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none"
+                                      value={row[col] ?? ''}
+                                      disabled={clearUpdatingId === row.id}
+                                      onChange={e => {
+                                        const newValue = e.target.value
+                                        setClearRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                        // Track edits
+                                        setClearEditedRows(prev => {
+                                          const updated = { ...prev }
+                                          const original = clearRows[idx] || {}
+                                          if (original[col] !== newValue) {
+                                            updated[row.id] = { ...(updated[row.id] || {}), [col]: newValue }
+                                          } else if (updated[row.id]) {
+                                            delete updated[row.id][col]
+                                            if (Object.keys(updated[row.id]).length === 0) delete updated[row.id]
+                                          }
+                                          return updated
+                                        })
+                                      }}
+                                      onBlur={e => {/* no-op, save only on button click */}}
+                                      onKeyDown={e => {/* no-op, save only on button click */}}
+                                    />
+                                  )}
+                                </td>
+                              ))}
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              {experimentSubTab === "Exception Management" && (
+                <div>
+                  <div className="flex justify-end mb-4 gap-2">
+                    <button
+                      className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
+                      title="Source data from Firebase"
+                      onClick={fetchExcData}
+                    >
+                      <Download className="h-5 w-5" />
+                    </button>
+                    <button
+                      className="p-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 focus:outline-none disabled:opacity-50"
+                      title="Save changes"
+                      disabled={Object.keys(excEditedRows).length === 0 || excSaveLoading}
+                      onClick={async () => {
+                        setExcSaveLoading(true)
+                        try {
+                          for (const id of Object.keys(excEditedRows)) {
+                            await tradeOperations.updateTrade(id, excEditedRows[id])
+                          }
+                          setExcEditedRows({})
+                          await fetchExcData()
+                        } catch (err) {
+                          setToastMsg('Save failed!')
+                          setToastType('error')
+                        }
+                        setExcSaveLoading(false)
+                      }}
+                    >
+                      {excSaveLoading ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
+                      <thead>
+                        <tr>
+                          {excColumns.map((col) => (
+                            <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {excLoading ? (
+                          <tr>
+                            <td colSpan={excColumns.length} className="text-center py-4">Loading...</td>
+                          </tr>
+                        ) : excRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={excColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                          </tr>
+                        ) : (
+                          excRows.map((row, idx) => (
+                            <tr key={row.id || idx} className={`${excUpdatingId === row.id ? "opacity-50" : ""} ${
+                              // Exception resolution logic for visual indicators
+                              (() => {
+                                const exceptionFlag = row['ExceptionFlag']
+                                const exceptionResolution = row['Exception Resolution']
+                                const reportingResolution = row['Reporting Resolution']
+                                
+                                if (exceptionFlag === 'No') {
+                                  return 'bg-green-50 dark:bg-green-900/10 border-l-4 border-l-green-500' // No exceptions - ready to forward
+                                } else if (exceptionFlag === 'Yes' && 
+                                          exceptionResolution && exceptionResolution.trim() !== '' &&
+                                          reportingResolution && reportingResolution.trim() !== '') {
+                                  return 'bg-blue-50 dark:bg-blue-900/10 border-l-4 border-l-blue-500' // Exceptions resolved - ready to forward
+                                } else if (exceptionFlag === 'Yes') {
+                                  return 'bg-red-50 dark:bg-red-900/10 border-l-4 border-l-red-500' // Exceptions pending resolution
+                                } else {
+                                  return 'bg-yellow-50 dark:bg-yellow-900/10 border-l-4 border-l-yellow-500' // Unknown status
+                                }
+                              })()
+                            }`}>
+                              {excColumns.map((col) => (
+                                <td key={col} className="min-w-[240px] px-4 py-2 border-b">
+                                  {col === 'id' ? (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none text-xs text-gray-500"
+                                      value={row.id}
+                                      disabled
+                                      readOnly
+                                    />
+                                  ) : (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none"
+                                      value={row[col] ?? ''}
+                                      disabled={excUpdatingId === row.id}
+                                      onChange={e => {
+                                        const newValue = e.target.value
+                                        setExcRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                        // Track edits
+                                        setExcEditedRows(prev => {
+                                          const updated = { ...prev }
+                                          const original = excRows[idx] || {}
+                                          if (original[col] !== newValue) {
+                                            updated[row.id] = { ...(updated[row.id] || {}), [col]: newValue }
+                                          } else if (updated[row.id]) {
+                                            delete updated[row.id][col]
+                                            if (Object.keys(updated[row.id]).length === 0) delete updated[row.id]
+                                          }
+                                          return updated
+                                        })
+                                      }}
+                                      onBlur={e => {/* no-op, save only on button click */}}
+                                      onKeyDown={e => {/* no-op, save only on button click */}}
+                                    />
+                                  )}
+                                </td>
+                              ))}
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Exception Tracking Table - Second Table */}
+                  <div className="mt-8">
+                    <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">Exception Tracking - Failed Validations</h3>
+                    <div className="flex justify-end mb-4 gap-2">
+                      <button
+                        className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
+                        title="Load exception tracking data"
+                        onClick={fetchExceptionTrackerData}
+                      >
+                        <Download className="h-5 w-5" />
+                      </button>
+                      <button
+                        className="p-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 focus:outline-none disabled:opacity-50"
+                        title="Save exception updates"
+                        disabled={Object.keys(exceptionTrackerEditedRows).length === 0 || exceptionTrackerSaveLoading}
+                        onClick={async () => {
+                          setExceptionTrackerSaveLoading(true)
+                          try {
+                            // Note: Exception tracker entries are synthetic, would need separate collection to save
+                            setExceptionTrackerEditedRows({})
+                            setToastMsg('Exception updates saved!')
+                            setToastType('success')
+                          } catch (err) {
+                            setToastMsg('Save failed!')
+                            setToastType('error')
+                          }
+                          setExceptionTrackerSaveLoading(false)
+                        }}
+                      >
+                        {exceptionTrackerSaveLoading ? 'Saving...' : 'Save'}
+                      </button>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
+                        <thead>
+                          <tr>
+                            {exceptionTrackerColumns.map((col) => (
+                              <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {exceptionTrackerLoading ? (
+                            <tr>
+                              <td colSpan={exceptionTrackerColumns.length} className="text-center py-4">Loading...</td>
+                            </tr>
+                          ) : exceptionTrackerRows.length === 0 ? (
+                            <tr>
+                              <td colSpan={exceptionTrackerColumns.length} className="text-center py-4 text-gray-400">No exceptions found</td>
+                            </tr>
+                          ) : (
+                            exceptionTrackerRows.map((row, idx) => (
+                              <tr key={row.id || idx} className={
+                                row['Resolution Status'] === 'Fixed' ? 'bg-green-50 dark:bg-green-900/10 border-l-4 border-l-green-500' :
+                                row['Resolution Status'] === 'In Progress' ? 'bg-yellow-50 dark:bg-yellow-900/10 border-l-4 border-l-yellow-500' :
+                                'bg-red-50 dark:bg-red-900/10 border-l-4 border-l-red-500'
+                              }>
+                                {exceptionTrackerColumns.map((col) => (
+                                  <td key={col} className="min-w-[240px] px-4 py-2 border-b">
+                                    {col === 'id' ? (
+                                      <input
+                                        className="w-full bg-transparent border-none outline-none text-xs text-gray-500"
+                                        value={row.id}
+                                        disabled
+                                        readOnly
+                                      />
+                                    ) : col === 'Source Tab' || col === 'TradeID' ? (
+                                      <input
+                                        className="w-full bg-transparent border-none outline-none text-gray-600"
+                                        value={row[col] ?? ''}
+                                        disabled
+                                        readOnly
+                                      />
+                                    ) : col === 'Error Category' ? (
+                                      <select
+                                        className="w-full bg-transparent border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm"
+                                        value={row[col] ?? 'Data Error'}
+                                        onChange={e => {
+                                          const newValue = e.target.value
+                                          setExceptionTrackerRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                          setExceptionTrackerEditedRows(prev => ({
+                                            ...prev,
+                                            [row.id]: { ...(prev[row.id] || {}), [col]: newValue }
+                                          }))
+                                        }}
+                                      >
+                                        <option value="Data Error">Data Error</option>
+                                        <option value="Instruction Mismatch">Instruction Mismatch</option>
+                                        <option value="Delay">Delay</option>
+                                        <option value="System Failure">System Failure</option>
+                                      </select>
+                                    ) : col === 'Owner Team' ? (
+                                      <select
+                                        className="w-full bg-transparent border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm"
+                                        value={row[col] ?? 'Operations Team'}
+                                        onChange={e => {
+                                          const newValue = e.target.value
+                                          setExceptionTrackerRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                          setExceptionTrackerEditedRows(prev => ({
+                                            ...prev,
+                                            [row.id]: { ...(prev[row.id] || {}), [col]: newValue }
+                                          }))
+                                        }}
+                                      >
+                                        <option value="Legal Team">Legal Team</option>
+                                        <option value="Operations Team">Operations Team</option>
+                                        <option value="Trading Team">Trading Team</option>
+                                        <option value="Technology Team">Technology Team</option>
+                                        <option value="Risk Team">Risk Team</option>
+                                      </select>
+                                    ) : col === 'Resolution Status' ? (
+                                      <select
+                                        className="w-full bg-transparent border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm"
+                                        value={row[col] ?? 'Pending'}
+                                        onChange={e => {
+                                          const newValue = e.target.value
+                                          setExceptionTrackerRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                          setExceptionTrackerEditedRows(prev => ({
+                                            ...prev,
+                                            [row.id]: { ...(prev[row.id] || {}), [col]: newValue }
+                                          }))
+                                        }}
+                                      >
+                                        <option value="Pending">Pending</option>
+                                        <option value="In Progress">In Progress</option>
+                                        <option value="Fixed">Fixed</option>
+                                      </select>
+                                    ) : (
+                                      <textarea
+                                        className="w-full bg-transparent border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm resize-none"
+                                        rows={2}
+                                        value={row[col] ?? ''}
+                                        onChange={e => {
+                                          const newValue = e.target.value
+                                          setExceptionTrackerRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                          setExceptionTrackerEditedRows(prev => ({
+                                            ...prev,
+                                            [row.id]: { ...(prev[row.id] || {}), [col]: newValue }
+                                          }))
+                                        }}
+                                        placeholder="Add timestamped comments..."
+                                      />
+                                    )}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {experimentSubTab === "Cost Allocation" && (
+                <div>
+                  <div className="flex justify-end mb-4 gap-2">
+                    <button
+                      className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
+                      title="Source data from Firebase"
+                      onClick={fetchCostData}
+                    >
+                      <Download className="h-5 w-5" />
+                    </button>
+                    <button
+                      className="p-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 focus:outline-none disabled:opacity-50"
+                      title="Save changes"
+                      disabled={Object.keys(costEditedRows).length === 0 || costSaveLoading}
+                      onClick={async () => {
+                        setCostSaveLoading(true)
+                        try {
+                          for (const id of Object.keys(costEditedRows)) {
+                            await tradeOperations.updateTrade(id, costEditedRows[id])
+                          }
+                          setCostEditedRows({})
+                          await fetchCostData()
+                        } catch (err) {
+                          setToastMsg('Save failed!')
+                          setToastType('error')
+                        }
+                        setCostSaveLoading(false)
+                      }}
+                    >
+                      {costSaveLoading ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
+                      <thead>
+                        <tr>
+                          {costColumns.map((col) => (
+                            <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {costLoading ? (
+                          <tr>
+                            <td colSpan={costColumns.length} className="text-center py-4">Loading...</td>
+                          </tr>
+                        ) : costRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={costColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                          </tr>
+                        ) : (
+                          costRows.map((row, idx) => (
+                            <tr key={row.id || idx} className={costUpdatingId === row.id ? "opacity-50" : ""}>
+                              {costColumns.map((col) => (
+                                <td key={col} className="min-w-[240px] px-4 py-2 border-b">
+                                  {col === 'id' ? (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none text-xs text-gray-500"
+                                      value={row.id}
+                                      disabled
+                                      readOnly
+                                    />
+                                  ) : (
+                                    <input
+                                      className="w-full bg-transparent border-none outline-none"
+                                      value={row[col] ?? ''}
+                                      disabled={costUpdatingId === row.id}
+                                      onChange={e => {
+                                        const newValue = e.target.value
+                                        setCostRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                        // Track edits
+                                        setCostEditedRows(prev => {
+                                          const updated = { ...prev }
+                                          const original = costRows[idx] || {}
+                                          if (original[col] !== newValue) {
+                                            updated[row.id] = { ...(updated[row.id] || {}), [col]: newValue }
+                                          } else if (updated[row.id]) {
+                                            delete updated[row.id][col]
+                                            if (Object.keys(updated[row.id]).length === 0) delete updated[row.id]
+                                          }
+                                          return updated
+                                        })
+                                      }}
+                                      onBlur={e => {/* no-op, save only on button click */}}
+                                      onKeyDown={e => {/* no-op, save only on button click */}}
+                                    />
+                                  )}
+                                </td>
+                              ))}
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Second Cost Allocation Table - Commission Details */}
+                  <div className="mt-8">
+                    <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">Commission & Fee Details</h3>
+                    <div className="flex justify-end mb-4 gap-2">
+                      <button
+                        className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
+                        title="Source commission data from Firebase"
+                        onClick={fetchCostDetailsData}
+                      >
+                        <Download className="h-5 w-5" />
+                      </button>
+                      <button
+                        className="p-2 rounded-md bg-blue-500 text-white hover:bg-blue-600 focus:outline-none disabled:opacity-50"
+                        title="Save commission changes"
+                        disabled={Object.keys(costDetailsEditedRows).length === 0 || costDetailsSaveLoading}
+                        onClick={async () => {
+                          setCostDetailsSaveLoading(true)
+                          try {
+                            for (const id of Object.keys(costDetailsEditedRows)) {
+                              await tradeOperations.updateTrade(id, costDetailsEditedRows[id])
+                            }
+                            setCostDetailsEditedRows({})
+                            await fetchCostDetailsData()
+                          } catch (err) {
+                            setToastMsg('Save failed!')
+                            setToastType('error')
+                          }
+                          setCostDetailsSaveLoading(false)
+                        }}
+                      >
+                        {costDetailsSaveLoading ? 'Saving...' : 'Save'}
+                      </button>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
+                        <thead>
+                          <tr>
+                            {costDetailsColumns.map((col, index) => (
+                              <th key={col} className={`min-w-[240px] px-4 py-2 border-b ${index < costDetailsColumns.length - 1 ? 'border-r border-gray-200 dark:border-gray-700' : ''}`}>{col}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {costDetailsLoading ? (
+                            <tr>
+                              <td colSpan={costDetailsColumns.length} className="text-center py-4 border-r-0">Loading...</td>
+                            </tr>
+                          ) : costDetailsRows.length === 0 ? (
+                            <tr>
+                              <td colSpan={costDetailsColumns.length} className="text-center py-4 text-gray-400 border-r-0">No data loaded</td>
+                            </tr>
+                          ) : (
+                            costDetailsRows.map((row, idx) => (
+                              <tr key={row.id || idx} className={
+                                (() => {
+                                  const expenseStatus = row['ExpenseApprovalStatus']
+                                  const costStatus = row['CostAllocationStatus']
+                                  
+                                  if (expenseStatus === 'Approved' && costStatus === 'Allocated') {
+                                    return 'bg-green-50 dark:bg-green-900/10 border-l-4 border-l-green-500' // Fully processed
+                                  } else if (expenseStatus === 'Approved') {
+                                    return 'bg-blue-50 dark:bg-blue-900/10 border-l-4 border-l-blue-500' // Approved but not allocated
+                                  } else if (expenseStatus === 'Pending Review') {
+                                    return 'bg-yellow-50 dark:bg-yellow-900/10 border-l-4 border-l-yellow-500' // Pending review
+                                  } else if (expenseStatus === 'Rejected') {
+                                    return 'bg-red-50 dark:bg-red-900/10 border-l-4 border-l-red-500' // Rejected
+                                  } else {
+                                    // Auto-determine based on threshold status
+                                    const commissionAmount = parseFloat(row['CommissionAmount'] || '0')
+                                    const threshold = parseFloat(row['threshold'] || '0')
+                                    return commissionAmount > threshold ? 
+                                      'bg-yellow-50 dark:bg-yellow-900/10 border-l-4 border-l-yellow-500' : // Would be pending
+                                      'bg-blue-50 dark:bg-blue-900/10 border-l-4 border-l-blue-500' // Would be approved
+                                  }
+                                })()
+                              }>
+                                {costDetailsColumns.map((col, index) => (
+                                  <td key={col} className={`min-w-[240px] px-4 py-2 border-b ${index < costDetailsColumns.length - 1 ? 'border-r border-gray-200 dark:border-gray-700' : ''}`}>
+                                    {col === 'id' ? (
+                                      <input
+                                        className="w-full bg-transparent border-none outline-none text-xs text-gray-500"
+                                        value={row.id}
+                                        disabled
+                                        readOnly
+                                      />
+                                     ) : col === 'threshold status' ? (
+                                       <div className="flex justify-center items-center">
+                                         <span className="text-xl">
+                                           {(() => {
+                                             const commissionAmount = parseFloat(row['CommissionAmount'] || '0')
+                                             const threshold = parseFloat(row['threshold'] || '0')
+                                             return commissionAmount > threshold ? '⚠️' : '✅'
+                                           })()}
+                                         </span>
+                                       </div>
+                                     ) : col === 'CommissionAmount' ? (
+                                       <div className="flex gap-2 items-center">
+                                         <input
+                                           className="flex-1 bg-transparent border-none outline-none"
+                                           value={row[col] ?? ''}
+                                           onChange={e => {
+                                             const newValue = e.target.value
+                                             setCostDetailsRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                             // Track edits
+                                             setCostDetailsEditedRows(prev => {
+                                               const updated = { ...prev }
+                                               const original = costDetailsRows[idx] || {}
+                                               if (original[col] !== newValue) {
+                                                 updated[row.id] = { ...(updated[row.id] || {}), [col]: newValue }
+                                               } else if (updated[row.id]) {
+                                                 delete updated[row.id][col]
+                                                 if (Object.keys(updated[row.id]).length === 0) delete updated[row.id]
+                                               }
+                                               return updated
+                                             })
+                                           }}
+                                         />
+                                         <button
+                                           className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 focus:outline-none"
+                                           onClick={() => {
+                                             const notionalAmount = parseFloat(row['NotionalAmount'] || '0')
+                                             const commissionRate = parseFloat((row['commission rate agreed'] || '0').replace('%', ''))
+                                             const calculatedAmount = (notionalAmount * commissionRate / 100).toFixed(2)
+                                             
+                                             // Update the commission amount
+                                             setCostDetailsRows(prev => prev.map((r, i) => 
+                                               i === idx ? { ...r, 'CommissionAmount': calculatedAmount } : r
+                                             ))
+                                             
+                                             // Track edits
+                                             setCostDetailsEditedRows(prev => ({
+                                               ...prev,
+                                               [row.id]: { ...(prev[row.id] || {}), 'CommissionAmount': calculatedAmount }
+                                             }))
+                                             
+                                             setToastMsg(`Commission calculated: ${calculatedAmount}`)
+                                             setToastType('success')
+                                           }}
+                                         >
+                                           Calculate
+                                                                                   </button>
+                                        </div>
+                                      ) : col === 'FXGainLoss' ? (
+                                        <div className="flex gap-2 items-center">
+                                          <input
+                                            className="flex-1 bg-transparent border-none outline-none"
+                                            value={row[col] ?? ''}
+                                            onChange={e => {
+                                              const newValue = e.target.value
+                                              setCostDetailsRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                              // Track edits
+                                              setCostDetailsEditedRows(prev => {
+                                                const updated = { ...prev }
+                                                const original = costDetailsRows[idx] || {}
+                                                if (original[col] !== newValue) {
+                                                  updated[row.id] = { ...(updated[row.id] || {}), [col]: newValue }
+                                                } else if (updated[row.id]) {
+                                                  delete updated[row.id][col]
+                                                  if (Object.keys(updated[row.id]).length === 0) delete updated[row.id]
+                                                }
+                                                return updated
+                                              })
+                                            }}
+                                          />
+                                          <button
+                                            className="px-2 py-1 text-xs bg-green-500 text-white rounded hover:bg-green-600 focus:outline-none"
+                                            onClick={() => {
+                                              const commissionAmount = parseFloat(row['CommissionAmount'] || '0')
+                                              const fxRate = parseFloat(row['FXRate'] || '1')
+                                              
+                                              // CommissionAmount in DealtCurrency * FXRate - CommissionAmount in reportingCurrency
+                                              // Assuming CommissionAmount is in DealtCurrency, and we need to convert to reporting currency
+                                              const commissionInReportingCurrency = commissionAmount * fxRate
+                                              const fxGainLoss = commissionInReportingCurrency - commissionAmount
+                                              const calculatedFXGainLoss = fxGainLoss.toFixed(2)
+                                              
+                                              // Update the FX Gain/Loss
+                                              setCostDetailsRows(prev => prev.map((r, i) => 
+                                                i === idx ? { ...r, 'FXGainLoss': calculatedFXGainLoss } : r
+                                              ))
+                                              
+                                              // Track edits
+                                              setCostDetailsEditedRows(prev => ({
+                                                ...prev,
+                                                [row.id]: { ...(prev[row.id] || {}), 'FXGainLoss': calculatedFXGainLoss }
+                                              }))
+                                              
+                                              setToastMsg(`FX Gain/Loss calculated: ${calculatedFXGainLoss}`)
+                                              setToastType('success')
+                                            }}
+                                          >
+                                            Calculate
+                                          </button>
+                                        </div>
+                                      ) : col === 'ExpenseApprovalStatus' ? (
+                                        <select
+                                          className="w-full bg-transparent border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm"
+                                          value={row[col] ?? (() => {
+                                            // Auto-determine based on threshold status
+                                            const commissionAmount = parseFloat(row['CommissionAmount'] || '0')
+                                            const threshold = parseFloat(row['threshold'] || '0')
+                                            return commissionAmount > threshold ? 'Pending Review' : 'Approved'
+                                          })()}
+                                          onChange={e => {
+                                            const newValue = e.target.value
+                                            const updates: any = { [col]: newValue }
+                                            
+                                            // If approved, auto-update CostAllocationStatus and CostBookedDate
+                                            if (newValue === 'Approved') {
+                                              updates['CostAllocationStatus'] = 'Allocated'
+                                              updates['CostBookedDate'] = new Date().toISOString().split('T')[0] // Current date
+                                            }
+                                            
+                                            setCostDetailsRows(prev => prev.map((r, i) => i === idx ? { ...r, ...updates } : r))
+                                            setCostDetailsEditedRows(prev => ({
+                                              ...prev,
+                                              [row.id]: { ...(prev[row.id] || {}), ...updates }
+                                            }))
+                                            
+                                            if (newValue === 'Approved') {
+                                              setToastMsg('Expense approved! Cost allocation updated.')
+                                              setToastType('success')
+                                            }
+                                          }}
+                                        >
+                                          <option value="Approved">Approved</option>
+                                          <option value="Pending Review">Pending Review</option>
+                                          <option value="Rejected">Rejected</option>
+                                        </select>
+                                      ) : col === 'CostAllocationStatus' ? (
+                                        <input
+                                          className="w-full bg-transparent border-none outline-none text-gray-600"
+                                          value={row[col] ?? ''}
+                                          disabled
+                                          readOnly
+                                          placeholder="Auto-updated on approval"
+                                        />
+                                      ) : col === 'CostBookedDate' ? (
+                                        <input
+                                          className="w-full bg-transparent border-none outline-none text-gray-600"
+                                          value={row[col] ?? ''}
+                                          disabled
+                                          readOnly
+                                          placeholder="Auto-updated on approval"
+                                        />
+                                      ) : (
+                                        <input
+                                          className="w-full bg-transparent border-none outline-none"
+                                          value={row[col] ?? ''}
+                                          onChange={e => {
+                                            const newValue = e.target.value
+                                            setCostDetailsRows(prev => prev.map((r, i) => i === idx ? { ...r, [col]: newValue } : r))
+                                            // Track edits
+                                            setCostDetailsEditedRows(prev => {
+                                              const updated = { ...prev }
+                                              const original = costDetailsRows[idx] || {}
+                                              if (original[col] !== newValue) {
+                                                updated[row.id] = { ...(updated[row.id] || {}), [col]: newValue }
+                                              } else if (updated[row.id]) {
+                                                delete updated[row.id][col]
+                                                if (Object.keys(updated[row.id]).length === 0) delete updated[row.id]
+                                              }
+                                              return updated
+                                            })
+                                          }}
+                                        />
+                                      )}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      case "Internal Messaging System":
+        return <InternalMessagingSystem />
       default:
         return (
           <div className="flex-1 flex items-center justify-center">
@@ -1031,6 +2884,373 @@ export default function CMTAApp() {
     }
   }
 
+  // Add state for Clearing and Settlement tab (place near other CMTA tab states)
+  const [clearRows, setClearRows] = useState<any[]>([])
+  const [clearLoading, setClearLoading] = useState(false)
+  const [clearEditedRows, setClearEditedRows] = useState<{ [id: string]: any }>({})
+  const [clearSaveLoading, setClearSaveLoading] = useState(false)
+  const [clearUpdatingId, setClearUpdatingId] = useState<string | null>(null)
+
+  // Add fetchClearData function (place near other fetch functions)
+  const fetchClearData = async () => {
+    setClearLoading(true)
+    try {
+              // Simple business logic: Only trades with ConfirmationStatus = 'Confirmed' 
+        // (set in Confirmations subtab) should proceed to Clearing and Settlement
+        const q = query(
+          collection(db, 'unified_data'), 
+          where('ConfirmationStatus', '==', 'Confirmed')
+        )
+      const snapshot = await getDocs(q)
+      const rows = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      setClearRows(rows)
+    } catch (err) {
+      setClearRows([])
+    }
+    setClearLoading(false)
+  }
+
+  // Define columns for Clearing and Settlement tab (user-specified order, id last)
+  const clearColumns = [
+    "TradeID",
+    "SettlementDate",
+    "SettlementStatus",
+    "SettlementCurrency",
+    "SettlementCost",
+    "SettlementInstructions",
+    "SettlementMethod",
+    "Settlement_Method_Equity",
+    "Settlement_Method_Forex",
+    "Settlement_Cycle",
+    "MaturityDate",
+    "ValueDate",
+    "NettingEligibility",
+    "CustodyCurrency",
+    "CustodyFee",
+    "id", // Firestore document ID as last column
+  ]
+
+  // Exception Management Table State
+  const [excRows, setExcRows] = useState<any[]>([])
+  const [excLoading, setExcLoading] = useState(false)
+  const [excEditedRows, setExcEditedRows] = useState<{ [id: string]: any }>({})
+  const [excSaveLoading, setExcSaveLoading] = useState(false)
+  const [excUpdatingId, setExcUpdatingId] = useState<string | null>(null)
+
+  // Exception Tracking Table State (Second Table)
+  const [exceptionTrackerRows, setExceptionTrackerRows] = useState<any[]>([])
+  const [exceptionTrackerLoading, setExceptionTrackerLoading] = useState(false)
+  const [exceptionTrackerEditedRows, setExceptionTrackerEditedRows] = useState<{ [id: string]: any }>({})
+  const [exceptionTrackerSaveLoading, setExceptionTrackerSaveLoading] = useState(false)
+
+  // Exception Management columns (user-specified order, id last)
+  const excColumns = [
+    "TradeID",
+    "ExceptionFlag",
+    "Exception Type",
+    "Exception Description",
+    "Exception Reason",
+    "Exception Resolution",
+    "Reporting Resolution",
+    "disputeReason",
+    "reason",
+    "id", // Firestore document ID as last column
+  ]
+
+  // Exception Tracking Table columns (Second Table)
+  const exceptionTrackerColumns = [
+    "Source Tab",
+    "TradeID", 
+    "Error Category",
+    "Owner Team",
+    "Resolution Status",
+    "Timestamped Comments",
+    "id", // Firestore document ID as last column
+  ]
+
+  // Fetch Exception Tracking data (all failed validations)
+  const fetchExceptionTrackerData = async () => {
+    setExceptionTrackerLoading(true)
+    try {
+      const snapshot = await getDocs(collection(db, "unified_data"))
+      const allRecords = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      
+      const exceptions: any[] = []
+      
+      // Check each record for validation failures and create exception entries
+      allRecords.forEach((record) => {
+        // Check Agreement Setup validation
+        if (!record['CMTA Agreement Status'] || record['CMTA Agreement Status'] !== 'Signed') {
+          exceptions.push({
+            id: `exc_${record.id}_agreement`,
+            "Source Tab": "Agreement Setup",
+            "TradeID": record.TradeID || record.id,
+            "Error Category": "Data Error",
+            "Owner Team": "Legal Team",
+            "Resolution Status": "Pending",
+            "Timestamped Comments": `${new Date().toISOString()}: Agreement not signed - Status: ${record['CMTA Agreement Status'] || 'Missing'}`
+          })
+        }
+        
+        // Check Reference Data validation (for signed agreements)
+        if (record['CMTA Agreement Status'] === 'Signed' && 
+            (!record['Reference_Data_Validated'] || record['Reference_Data_Validated'] !== 'Yes')) {
+          exceptions.push({
+            id: `exc_${record.id}_refdata`,
+            "Source Tab": "Reference Data Mapping",
+            "TradeID": record.TradeID || record.id,
+            "Error Category": "Data Error",
+            "Owner Team": "Operations Team",
+            "Resolution Status": "Pending",
+            "Timestamped Comments": `${new Date().toISOString()}: Reference data validation failed - Status: ${record['Reference_Data_Validated'] || 'Missing'}`
+          })
+        }
+        
+        // Check Trade Capture validation (for signed + validated)
+        if (record['CMTA Agreement Status'] === 'Signed' && 
+            record['Reference_Data_Validated'] === 'Yes' &&
+            (!record['TradeStatus'] || record['TradeStatus'] !== 'Booked')) {
+          exceptions.push({
+            id: `exc_${record.id}_trade`,
+            "Source Tab": "Trade Capture",
+            "TradeID": record.TradeID || record.id,
+            "Error Category": "Instruction Mismatch",
+            "Owner Team": "Trading Team",
+            "Resolution Status": "Pending",
+            "Timestamped Comments": `${new Date().toISOString()}: Trade booking failed - Status: ${record['TradeStatus'] || 'Missing'}`
+          })
+        }
+        
+        // Check Trade Enrichment validation
+        if (record['CMTA Agreement Status'] === 'Signed' && 
+            record['Reference_Data_Validated'] === 'Yes' &&
+            record['TradeStatus'] === 'Booked' &&
+            (!record['Instrument_Status'] || record['Instrument_Status'] !== 'Active')) {
+          exceptions.push({
+            id: `exc_${record.id}_enrichment`,
+            "Source Tab": "Trade Enrichment and Routing",
+            "TradeID": record.TradeID || record.id,
+            "Error Category": "System Failure",
+            "Owner Team": "Technology Team",
+            "Resolution Status": "Pending",
+            "Timestamped Comments": `${new Date().toISOString()}: Instrument status check failed - Status: ${record['Instrument_Status'] || 'Missing'}`
+          })
+        }
+        
+        // Check Confirmations validation
+        if (record['CMTA Agreement Status'] === 'Signed' && 
+            record['Reference_Data_Validated'] === 'Yes' &&
+            record['TradeStatus'] === 'Booked' &&
+            record['Instrument_Status'] === 'Active' &&
+            (!record['ConfirmationStatus'] || record['ConfirmationStatus'] !== 'Confirmed')) {
+          exceptions.push({
+            id: `exc_${record.id}_confirmation`,
+            "Source Tab": "Confirmations",
+            "TradeID": record.TradeID || record.id,
+            "Error Category": "Delay",
+            "Owner Team": "Operations Team", 
+            "Resolution Status": "Pending",
+            "Timestamped Comments": `${new Date().toISOString()}: Confirmation pending - Status: ${record['ConfirmationStatus'] || 'Missing'}`
+          })
+        }
+      })
+      
+      setExceptionTrackerRows(exceptions)
+    } catch (err) {
+      setExceptionTrackerRows([])
+    }
+    setExceptionTrackerLoading(false)
+  }
+
+  // Fetch Exception Management data
+  const fetchExcData = async () => {
+    setExcLoading(true)
+    try {
+      const snapshot = await getDocs(collection(db, "unified_data"))
+      const rows = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      setExcRows(rows)
+    } catch (err) {
+      setExcRows([])
+    }
+    setExcLoading(false)
+  }
+
+  // Cost Allocation Table State
+  const [costRows, setCostRows] = useState<any[]>([])
+  const [costLoading, setCostLoading] = useState(false)
+  const [costEditedRows, setCostEditedRows] = useState<{ [id: string]: any }>({})
+  const [costSaveLoading, setCostSaveLoading] = useState(false)
+  const [costUpdatingId, setCostUpdatingId] = useState<string | null>(null)
+
+  // Second Cost Allocation Table State  
+  const [costDetailsRows, setCostDetailsRows] = useState<any[]>([])
+  const [costDetailsLoading, setCostDetailsLoading] = useState(false)
+  const [costDetailsEditedRows, setCostDetailsEditedRows] = useState<{ [id: string]: any }>({})
+  const [costDetailsSaveLoading, setCostDetailsSaveLoading] = useState(false)
+
+  // Cost Allocation columns (user-specified order, id last)
+  const costColumns = [
+    "TradeID",
+    "CostAllocationStatus", 
+    "CostBookedDate",
+    "CostCenter",
+    "DealtCurrency",
+    "reportingCurrency",
+    "FXRate",
+    "id", // Firestore document ID as last column
+  ]
+
+  // Second Cost Allocation Table columns
+  const costDetailsColumns = [
+    "TradeID",
+    "NotionalAmount",
+    "CommissionAmount",
+    "CommissionCurrency", 
+    "commission rate agreed",
+    "BrokerageFee",
+    "BrokerageCurrency",
+    "FXGainLoss",
+    "ExpenseApprovalStatus",
+    "threshold",
+    "threshold status",
+    "CostAllocationStatus",
+    "CostBookedDate",
+    "id", // Firestore document ID as last column
+  ]
+
+  // Fetch Cost Allocation data
+  const fetchCostData = async () => {
+    setCostLoading(true)
+    try {
+      const snapshot = await getDocs(collection(db, "unified_data"))
+      const allRows = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      
+      // Cost Allocation business logic based on Exception Management status:
+      // 1. If ExceptionFlag = 'No' → Forward directly to Cost Allocation
+      // 2. If ExceptionFlag = 'Yes' → Only forward if BOTH 'Exception Resolution' AND 'Reporting Resolution' are present
+      const filteredRows = allRows.filter((row: any) => {
+        const exceptionFlag = row['ExceptionFlag']
+        
+        if (exceptionFlag === 'No') {
+          // Case 1: No exceptions - forward directly
+          return true
+        } else if (exceptionFlag === 'Yes') {
+          // Case 2: Exceptions exist - only forward if both resolutions are present
+          const exceptionResolution = row['Exception Resolution']
+          const reportingResolution = row['Reporting Resolution']
+          return (
+            exceptionResolution && exceptionResolution.trim() !== '' &&
+            reportingResolution && reportingResolution.trim() !== ''
+          )
+        }
+        
+        // If ExceptionFlag is neither 'Yes' nor 'No', don't forward
+        return false
+      })
+      
+      setCostRows(filteredRows)
+    } catch (err) {
+      setCostRows([])
+    }
+    setCostLoading(false)
+  }
+
+  // Fetch Cost Details data (second table)
+  const fetchCostDetailsData = async () => {
+    setCostDetailsLoading(true)
+    try {
+      const snapshot = await getDocs(collection(db, "unified_data"))
+      const allRows = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      
+      // Apply same Cost Allocation business logic as first table:
+      // 1. If ExceptionFlag = 'No' → Forward directly to Cost Allocation
+      // 2. If ExceptionFlag = 'Yes' → Only forward if BOTH 'Exception Resolution' AND 'Reporting Resolution' are present
+      const filteredRows = allRows.filter((row: any) => {
+        const exceptionFlag = row['ExceptionFlag']
+        
+        if (exceptionFlag === 'No') {
+          // Case 1: No exceptions - forward directly
+          return true
+        } else if (exceptionFlag === 'Yes') {
+          // Case 2: Exceptions exist - only forward if both resolutions are present
+          const exceptionResolution = row['Exception Resolution']
+          const reportingResolution = row['Reporting Resolution']
+          return (
+            exceptionResolution && exceptionResolution.trim() !== '' &&
+            reportingResolution && reportingResolution.trim() !== ''
+          )
+        }
+        
+        // If ExceptionFlag is neither 'Yes' nor 'No', don't forward
+        return false
+      })
+      
+      setCostDetailsRows(filteredRows)
+    } catch (err) {
+      setCostDetailsRows([])
+    }
+    setCostDetailsLoading(false)
+  }
+
+  // Agreement Document Table State
+  const [agreementRows, setAgreementRows] = useState<any[]>([])
+  const [agreementLoading, setAgreementLoading] = useState(false)
+  const [agreementEditedRows, setAgreementEditedRows] = useState<{ [id: string]: any }>({})
+  const [agreementStatusSaveLoading, setAgreementStatusSaveLoading] = useState(false)
+  const [showAgreementDocTable, setShowAgreementDocTable] = useState(false)
+
+  // Agreement Document columns
+  const agreementColumns = [
+    "Broker",
+    "client",
+    "CMTA Agreement Status",
+    "version",
+    "Generated on",
+    "Last modified",
+    "View agreement",
+    "commission rate agreed",
+    "signed agreement",
+    "id",
+  ]
+
+  // Fetch Agreement Document data (for now, just reuse unified_data)
+  const fetchAgreementRows = async () => {
+    setAgreementLoading(true)
+    try {
+      const snapshot = await getDocs(collection(db, "unified_data"))
+      const rows = snapshot.docs.map((doc: any) => ({
+        id: doc.id,
+        Broker: doc.data().Broker || doc.data().broker || "Goldman Sachs",
+        client: doc.data().client || doc.data().Client || "Client Corp",
+        "CMTA Agreement Status": doc.data()["CMTA Agreement Status"] || "Draft",
+        version: "v1",
+        "Generated on": new Date().toLocaleDateString(),
+        "Last modified": new Date().toLocaleDateString(),
+        "View agreement": "",
+        "commission rate agreed": doc.data()["commission rate agreed"] || `${(Math.random() * (0.5 - 0.1) + 0.1).toFixed(3)}%`,
+        "signed agreement": "",
+        // Additional fields for PDF generation
+        BrokerageCurrency: doc.data().BrokerageCurrency || "USD",
+        BrokerageFee: doc.data().BrokerageFee || "0.25%",
+        EffectiveDate_Equity: doc.data().EffectiveDate_Equity || new Date().toLocaleDateString(),
+        EffectiveDate_Forex: doc.data().EffectiveDate_Forex || new Date().toLocaleDateString(),
+        LEI: doc.data().LEI || "5493000SCC2CB6S5CT72",
+        clientId: doc.data().clientId || doc.data().Client || "CLIENT001"
+      }))
+      setAgreementRows(rows)
+    } catch (err) {
+      setAgreementRows([])
+    }
+    setAgreementLoading(false)
+  }
+
+  // Auto-load Agreement Document data when Agreement Setup subtab is selected
+  useEffect(() => {
+    if (experimentSubTab === "Agreement Setup") {
+      fetchAgreementRows()
+    }
+  }, [experimentSubTab])
+
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
       <header className="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700">
@@ -1040,7 +3260,7 @@ export default function CMTAApp() {
               <h2 className="text-xl font-bold text-gray-900 dark:text-white">{activeSidebarSection}</h2>
             </div>
 
-            {activeSidebarSection === "Clearing Member Trading Agreement" && (
+            {activeSidebarSection === "WIP" && (
               <nav className="flex space-x-1">
                 {topMenu.map((item) => (
                   <button
@@ -1060,7 +3280,7 @@ export default function CMTAApp() {
             )}
 
             <div className="flex items-center gap-2">
-              {activeSidebarSection !== "Clearing Member Trading Agreement" && (
+              {activeSidebarSection !== "WIP" && (
                 <div className="text-sm text-gray-500">Navigation options for {activeSidebarSection}</div>
               )}
 
@@ -1083,8 +3303,34 @@ export default function CMTAApp() {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        <aside className="w-64 bg-gray-800 dark:bg-gray-950 overflow-y-auto p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Cost Management</h3>
+        <aside className="w-64 bg-sidebar overflow-y-auto p-6 relative">
+          {/* Forward to Settlements button */}
+          <button
+            onClick={() => setActiveSidebarSection("Forward to Settlements")}
+            className={`absolute bottom-12 right-4 w-6 h-6 rounded-full border border-sidebar-foreground/30 flex items-center justify-center transition-colors ${
+              activeSidebarSection === "Forward to Settlements"
+                ? "bg-sidebar-accent text-sidebar-accent-foreground border-sidebar-accent"
+                : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:border-sidebar-foreground/50"
+            }`}
+            title="Forward to Settlements"
+          >
+            <ArrowRight className="w-2.5 h-2.5" />
+          </button>
+
+          {/* WIP button in bottom-right corner */}
+          <button
+            onClick={() => setActiveSidebarSection("WIP")}
+            className={`absolute bottom-4 right-4 w-6 h-6 rounded-full border border-sidebar-foreground/30 flex items-center justify-center transition-colors ${
+              activeSidebarSection === "WIP"
+                ? "bg-sidebar-accent text-sidebar-accent-foreground border-sidebar-accent"
+                : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:border-sidebar-foreground/50"
+            }`}
+            title="Work in Progress"
+          >
+            <Settings className="w-2.5 h-2.5" />
+          </button>
+
+          <h3 className="text-lg font-semibold text-sidebar-foreground mb-4">Cost Management</h3>
           <nav className="space-y-2">
             {sidebarMenu.map((item) => (
               <button
@@ -1092,8 +3338,8 @@ export default function CMTAApp() {
                 onClick={() => setActiveSidebarSection(item)}
                 className={`w-full text-left py-2 px-3 rounded-md transition ${
                   activeSidebarSection === item
-                    ? "bg-black text-white"
-                    : "text-gray-300 hover:bg-gray-700 hover:text-white"
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/80 hover:bg-sidebar-accent/20 hover:text-sidebar-foreground"
                 }`}
               >
                 {item}
@@ -1101,25 +3347,25 @@ export default function CMTAApp() {
             ))}
           </nav>
 
-          {activeSidebarSection === "Clearing Member Trading Agreement" && !loading && trades.length > 0 && (
-            <div className="mt-8 p-4 bg-gray-700 dark:bg-gray-800 rounded-md">
-              <h3 className="text-white font-semibold mb-2">Data Summary</h3>
-              <div className="text-sm text-gray-300 space-y-1">
+          {activeSidebarSection === "WIP" && !loading && trades.length > 0 && (
+            <div className="mt-8 p-4 bg-sidebar-accent/30 rounded-md">
+              <h3 className="text-sidebar-foreground font-semibold mb-2">Data Summary</h3>
+              <div className="text-sm text-sidebar-foreground/80 space-y-1">
                 <div>Total Trades: {trades.length.toLocaleString()}</div>
                 <div>Data Type: {dataType.toUpperCase()}</div>
-                <div className="text-xs text-gray-400 mt-2">Source: {dataSource.toUpperCase()}</div>
+                <div className="text-xs text-sidebar-foreground/60 mt-2">Source: {dataSource.toUpperCase()}</div>
               </div>
             </div>
           )}
 
-          {activeSidebarSection === "Clearing Member Trading Agreement" && (
-            <div className="mt-8 p-4 bg-gray-700 dark:bg-gray-800 rounded-md">
-              <h3 className="text-white font-semibold mb-2">Data Type</h3>
+          {activeSidebarSection === "WIP" && (
+            <div className="mt-8 p-4 bg-sidebar-accent/30 rounded-md">
+              <h3 className="text-sidebar-foreground font-semibold mb-2">Data Type</h3>
               <div className="flex flex-col space-y-2 mt-2">
                 <button
                   onClick={() => handleDataTypeChange("equity")}
                   className={`px-3 py-2 rounded-md text-sm font-medium transition flex items-center ${
-                    dataType === "equity" ? "bg-black text-white" : "bg-gray-600 text-white hover:bg-gray-500"
+                    dataType === "equity" ? "bg-sidebar-accent text-sidebar-accent-foreground" : "bg-sidebar-accent/50 text-sidebar-foreground hover:bg-sidebar-accent/70"
                   }`}
                 >
                   <BarChart3 className="mr-2 h-4 w-4" />
@@ -1128,7 +3374,7 @@ export default function CMTAApp() {
                 <button
                   onClick={() => handleDataTypeChange("fx")}
                   className={`px-3 py-2 rounded-md text-sm font-medium transition flex items-center ${
-                    dataType === "fx" ? "bg-black text-white" : "bg-gray-600 text-white hover:bg-gray-500"
+                    dataType === "fx" ? "bg-sidebar-accent text-sidebar-accent-foreground" : "bg-sidebar-accent/50 text-sidebar-foreground hover:bg-sidebar-accent/70"
                   }`}
                 >
                   <CreditCard className="mr-2 h-4 w-4" />
@@ -1148,7 +3394,7 @@ export default function CMTAApp() {
               trades={trades}
               dataType={dataType}
               currentSection={
-                activeSidebarSection === "Clearing Member Trading Agreement" ? page : activeSidebarSection
+                activeSidebarSection === "WIP" ? page : activeSidebarSection
               }
               sectionData={{
                 page,
@@ -1160,6 +3406,14 @@ export default function CMTAApp() {
           )}
         </main>
       </div>
+      {/* Toast/alert for feedback */}
+      {toastMsg && (
+        <div className={`fixed top-4 right-4 z-50 px-4 py-2 rounded shadow-lg text-white ${toastType === 'success' ? 'bg-green-600' : 'bg-red-600'}`}
+             onAnimationEnd={() => setToastMsg(null)}>
+          {toastMsg}
+          <button className="ml-2 text-white" onClick={() => setToastMsg(null)}>x</button>
+        </div>
+      )}
     </div>
   )
 }

@@ -1,8 +1,6 @@
 "use client"
 
-import type React from "react"
-
-import { useState, useEffect } from "react"
+import React, { useState, useEffect, useRef } from "react"
 import {
   Upload,
   AlertTriangle,
@@ -46,6 +44,7 @@ import { fetchTradeData, type TradeData } from "@/lib/data-processor"
 import { InvoiceDocument } from "@/components/invoice-document"
 import { useAgentBillingFirebase } from "@/hooks/use-agent-billing-firebase"
 import { agentBillingOperations } from "@/lib/firebase-operations"
+import { tradeOperations } from "@/lib/firebase-operations"
 
 // Mock data types
 interface Invoice {
@@ -85,7 +84,7 @@ interface ReconciliationResult {
   custodyFeeMatch: boolean
   settlementCostMatch: boolean
   brokerageFeeMatch: boolean
-  overallStatus: "reconciled" | "mismatch" | "partial"
+  overallStatus: "reconciled" | "mismatch" | "matched"
   discrepancies: string[]
   disputeTypes?: string[] // Changed to array to support multiple dispute types
   hasDispute: boolean // Flag to indicate if this trade has a built-in dispute
@@ -224,7 +223,7 @@ const mockDisputes: Dispute[] = [
 ]
 
 // NO YELLOW COLORS - Only teal, blue, green, red, purple
-const COLORS = ["#14b8a6", "#3b82f6", "#10b981", "#8b5cf6", "#ef4444", "#06b6d4", "#84cc16", "#f97316"]
+const COLORS = ["#22c55e", "#3b82f6", "#ef4444", "#16a34a", "#f59e0b", "#6b7280", "#1f2937", "#f97316"]
 
 // FX Dataset Fields (55 columns)
 const fxDatasetFields = [
@@ -320,6 +319,26 @@ const equityDatasetFields = [
   { key: "Margin Status", label: "Margin Status", required: false },
 ]
 
+// Add this helper function near the top (after imports)
+function excelDateToJSDate(serial: any): string {
+  if (typeof serial === "number") {
+    const utc_days = Math.floor(serial - 25569);
+    const utc_value = utc_days * 86400;
+    const date_info = new Date(utc_value * 1000);
+    return date_info.toISOString().slice(0, 10);
+  }
+  if (typeof serial === "string" && /^\d+(\.\d+)?$/.test(serial)) {
+    const num = parseFloat(serial);
+    if (!isNaN(num)) {
+      const utc_days = Math.floor(num - 25569);
+      const utc_value = utc_days * 86400;
+      const date_info = new Date(utc_value * 1000);
+      return date_info.toISOString().slice(0, 10);
+    }
+  }
+  return serial;
+}
+
 export default function AgentBilling() {
   const [activeTab, setActiveTab] = useState("dashboard")
   const [invoices, setInvoices] = useState<Invoice[]>(mockInvoices)
@@ -336,6 +355,8 @@ export default function AgentBilling() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [uploadAnalysis, setUploadAnalysis] = useState<any>(null)
   const [datasetType, setDatasetType] = useState<"fx" | "equity" | null>(null)
+  const datasetTypeRef = useRef(datasetType);
+  React.useEffect(() => { datasetTypeRef.current = datasetType }, [datasetType]);
 
   const [selectedInvoiceData, setSelectedInvoiceData] = useState<any>(null)
   const [showInvoiceModal, setShowInvoiceModal] = useState(false)
@@ -365,45 +386,98 @@ export default function AgentBilling() {
   // Add this with other state declarations at the top
   const [disputeTab, setDisputeTab] = useState("summary")
 
-  // Dashboard metrics
-  const totalInvoicesThisMonth = invoices.length
+  // Helper function to safely convert to number
+  const safeToNumber = (value: any): number => {
+    if (value === null || value === undefined || value === '') return 0
+    const num = typeof value === 'string' ? parseFloat(value) : Number(value)
+    return isNaN(num) ? 0 : num
+  }
+
+  // Function to generate invoices from trade data
+  const generateInvoicesFromTradeData = (tradeData: TradeData[]): Invoice[] => {
+    return tradeData.map((trade, index) => {
+      const amount = trade.dataSource === "equity" 
+        ? safeToNumber(trade.commission) + safeToNumber(trade.taxes)
+        : safeToNumber(trade.commissionAmount || trade.commission) + safeToNumber(trade.custodyFee) + safeToNumber(trade.settlementCost) + safeToNumber(trade.brokerageFee)
+      
+      // Create some variance for realism
+      const hasVariance = Math.random() > 0.7
+      const variance = hasVariance ? amount * (0.05 + Math.random() * 0.15) : 0
+      
+      // Determine status based on variance and random factors
+      let status: Invoice['status'] = "reconciled"
+      if (hasVariance) {
+        status = Math.random() > 0.5 ? "mismatch" : "disputed"
+      } else if (Math.random() > 0.8) {
+        status = "pending"
+      } else if (Math.random() > 0.9) {
+        status = "approved"
+      }
+
+      return {
+        id: `TRADE-${trade.tradeId}-${index}`,
+        agentName: trade.counterparty || `Agent ${index + 1}`,
+        invoiceNumber: `INV-${trade.tradeId}-${new Date().getFullYear()}`,
+        tradeId: trade.tradeId,
+        amount: amount,
+        currency: trade.currency || trade.baseCurrency || trade.commissionCurrency || "USD",
+        serviceType: trade.dataSource === "equity" ? "Equity Trading" : "FX Trading",
+        uploadDate: new Date().toLocaleDateString(),
+        status: status,
+        variance: variance > 0 ? variance : undefined,
+        reconciliationDate: status === "reconciled" ? new Date().toLocaleDateString() : undefined,
+        tradeData: trade
+      }
+    })
+  }
+
+  // Use Firebase data if available, otherwise fall back to mock data
+  const activeInvoices = uploadedTradeData.length > 0 
+    ? generateInvoicesFromTradeData(uploadedTradeData)
+    : invoices
+
+  // Dashboard metrics using active data
+  const totalInvoicesThisMonth = activeInvoices.length
   const uploadedThisMonth = uploadedInvoices.length
-  const totalCostReconciled = invoices
+  const totalCostReconciled = activeInvoices
     .filter((inv) => inv.status === "reconciled" || inv.status === "approved")
     .reduce((sum, inv) => sum + inv.amount, 0)
   const disputesOpen = disputes.filter((d) => d.status === "open").length
-  const pendingApprovals = invoices.filter((inv) => inv.status === "reconciled").length
-  const costLeakage = invoices
+  const pendingApprovals = activeInvoices.filter((inv) => inv.status === "reconciled").length
+  const costLeakage = activeInvoices
     .filter((inv) => inv.variance && inv.variance > 0)
     .reduce((sum, inv) => sum + (inv.variance || 0), 0)
   const costLeakagePercent = totalCostReconciled > 0 ? (costLeakage / totalCostReconciled) * 100 : 0
 
-  // Chart data
+  // Chart data using active invoices
   const reconciliationStatusData = [
-    { name: "Reconciled", value: invoices.filter((inv) => inv.status === "reconciled").length },
-    { name: "Pending", value: invoices.filter((inv) => inv.status === "pending").length },
-    { name: "Mismatch", value: invoices.filter((inv) => inv.status === "mismatch").length },
-    { name: "Approved", value: invoices.filter((inv) => inv.status === "approved").length },
-    { name: "Disputed", value: invoices.filter((inv) => inv.status === "disputed").length },
+    { name: "Reconciled", value: activeInvoices.filter((inv) => inv.status === "reconciled").length },
+    { name: "Pending", value: activeInvoices.filter((inv) => inv.status === "pending").length },
+    { name: "Mismatch", value: activeInvoices.filter((inv) => inv.status === "mismatch").length },
+    { name: "Approved", value: activeInvoices.filter((inv) => inv.status === "approved").length },
+    { name: "Disputed", value: activeInvoices.filter((inv) => inv.status === "disputed").length },
   ]
 
   const costBreakdownData = [
     {
+      name: "Equity Trading",
+      value: activeInvoices.filter((inv) => inv.serviceType === "Equity Trading").reduce((sum, inv) => sum + inv.amount, 0),
+    },
+    {
+      name: "FX Trading", 
+      value: activeInvoices.filter((inv) => inv.serviceType === "FX Trading").reduce((sum, inv) => sum + inv.amount, 0),
+    },
+    {
       name: "Custody",
-      value: invoices.filter((inv) => inv.serviceType === "Custody").reduce((sum, inv) => sum + inv.amount, 0),
+      value: activeInvoices.filter((inv) => inv.serviceType === "Custody").reduce((sum, inv) => sum + inv.amount, 0),
     },
     {
       name: "Settlement",
-      value: invoices.filter((inv) => inv.serviceType === "Settlement").reduce((sum, inv) => sum + inv.amount, 0),
-    },
-    { name: "FX", value: invoices.filter((inv) => inv.serviceType === "FX").reduce((sum, inv) => sum + inv.amount, 0) },
-    {
-      name: "Ops Fees",
-      value: invoices.filter((inv) => inv.serviceType === "Ops Fees").reduce((sum, inv) => sum + inv.amount, 0),
+      value: activeInvoices.filter((inv) => inv.serviceType === "Settlement").reduce((sum, inv) => sum + inv.amount, 0),
     },
   ]
 
-  const topOverchargedAgents = invoices
+  const topOverchargedAgents = activeInvoices
     .filter((inv) => inv.variance && inv.variance > 0)
     .reduce(
       (acc, inv) => {
@@ -421,7 +495,7 @@ export default function AgentBilling() {
     .slice(0, 5)
 
   // Filter invoices - for reconciliation tab, only show forwarded invoices
-  const filteredInvoices = invoices.filter((invoice) => {
+  const filteredInvoices = activeInvoices.filter((invoice) => {
     const matchesSearch =
       invoice.agentName.toLowerCase().includes(searchTerm.toLowerCase()) ||
       invoice.invoiceNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -444,12 +518,7 @@ export default function AgentBilling() {
     { id: "upload", label: "Invoice Upload", icon: Upload },
     { id: "reconciliation", label: "Reconciliation", icon: RefreshCw },
     { id: "allocation", label: "Cost Allocation", icon: Target },
-    { id: "approval", label: "Approval Workflow", icon: CheckCircle },
     { id: "disputes", label: "Disputes", icon: AlertTriangle },
-    { id: "payment", label: "Payment Tracker", icon: CreditCard },
-    { id: "audit", label: "Audit & Compliance", icon: Shield },
-    { id: "reports", label: "Reports", icon: BarChart3 },
-    { id: "admin", label: "Admin", icon: Settings },
   ]
 
   // DISPUTE TYPES - Must match the ones in invoice-document.tsx EXACTLY
@@ -468,11 +537,11 @@ export default function AgentBilling() {
 
   // Helper function to check if a trade has a dispute and get specific dispute types (matches invoice logic exactly)
   const checkTradeHasDispute = (trade: TradeData): { hasDispute: boolean; disputeTypes: string[] } => {
-    const safeTradeId = trade.tradeId || trade.tradeID || "DEFAULT"
+    const safeTradeId = trade.tradeId || "DEFAULT"
     const hash = safeTradeId
       .toString()
       .split("")
-      .reduce((acc, char) => acc + char.charCodeAt(0), 0)
+      .reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0)
 
     // Use modulo 15 to create batches, and select positions 3 and 11 for disputes
     const batchPosition = hash % 15
@@ -510,7 +579,7 @@ export default function AgentBilling() {
   const performReconciliation = (invoice: Invoice): ReconciliationResult => {
     // Find matching trade data from uploaded dataset
     const matchingTrade = uploadedTradeData.find(
-      (trade) => trade.tradeId === invoice.tradeId || trade.tradeID === invoice.tradeId,
+      (trade) => trade.tradeId === invoice.tradeId,
     )
 
     if (!matchingTrade) {
@@ -548,7 +617,7 @@ export default function AgentBilling() {
     const totalChecks = 8
 
     // 1. Trade ID Match
-    const tradeIdMatch = matchingTrade.tradeId === invoice.tradeId || matchingTrade.tradeID === invoice.tradeId
+    const tradeIdMatch = matchingTrade.tradeId === invoice.tradeId
     if (tradeIdMatch) matchCount++
     else discrepancies.push("Trade ID mismatch")
 
@@ -630,7 +699,7 @@ export default function AgentBilling() {
     const amountMatch = Math.abs(expectedTotal - actualTotal) <= commissionTolerance
     if (amountMatch) matchCount++
     else {
-      discrepancies.push(`Total Amount mismatch: Expected $${expectedTotal.toFixed(2)}, Got $${actualTotal.toFixed(2)}`)
+      discrepancies.push(`Total Amount mismatch: Expected $${(expectedTotal || 0).toFixed(2)}, Got $${(actualTotal || 0).toFixed(2)}`)
       if (disputeInfo.hasDispute && disputeInfo.disputeTypes.length > 0) {
         discrepancies.push(`Dispute detected: ${disputeInfo.disputeTypes.join(", ")} - Total amount affected`)
       }
@@ -641,13 +710,13 @@ export default function AgentBilling() {
     if (dateMatch) matchCount++
 
     // Determine overall status - if there's a dispute, it should be mismatch
-    let overallStatus: "reconciled" | "mismatch" | "partial"
+    let overallStatus: "reconciled" | "mismatch" | "matched"
     if (disputeInfo.hasDispute) {
       overallStatus = "mismatch" // Force mismatch for disputed trades
     } else if (matchCount === totalChecks) {
-      overallStatus = "reconciled" // Changed from "match" to "reconciled"
-    } else if (matchCount >= totalChecks * 0.7) {
-      overallStatus = "partial"
+      overallStatus = "reconciled" // All checks pass perfectly
+    } else if (counterpartyMatch && amountMatch && commissionMatch) {
+      overallStatus = "matched" // Three main fields match
     } else {
       overallStatus = "mismatch"
     }
@@ -710,8 +779,8 @@ export default function AgentBilling() {
   const getExpectedCosts = (trade: TradeData) => {
     if (trade.dataSource === "equity") {
       return {
-        commission: trade.commission || 0,
-        taxes: trade.taxes || 0,
+        commission: safeToNumber(trade.commission),
+        taxes: safeToNumber(trade.taxes),
         custodyFee: 0, // Not available in equity dataset
         settlementCost: 0, // Not available in equity dataset
         brokerageFee: 0, // Not available in equity dataset
@@ -719,11 +788,11 @@ export default function AgentBilling() {
     } else {
       // FX dataset
       return {
-        commission: trade.commissionAmount || trade.commission || 0,
+        commission: safeToNumber(trade.commissionAmount || trade.commission),
         taxes: 0, // Not available in FX dataset
-        custodyFee: trade.custodyFee || 0,
-        settlementCost: trade.settlementCost || 0,
-        brokerageFee: trade.brokerageFee || 0,
+        custodyFee: safeToNumber(trade.custodyFee),
+        settlementCost: safeToNumber(trade.settlementCost),
+        brokerageFee: safeToNumber(trade.brokerageFee),
       }
     }
   }
@@ -743,7 +812,7 @@ export default function AgentBilling() {
     const hash = safeTradeId
       .toString()
       .split("")
-      .reduce((acc, char) => acc + char.charCodeAt(0), 0)
+      .reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0)
     return wrongCounterparties[hash % wrongCounterparties.length]
   }
 
@@ -1031,32 +1100,42 @@ export default function AgentBilling() {
               <div className="mb-6">
                 <Button
                   onClick={async () => {
-                    if (!datasetType) {
+                    const currentType = datasetTypeRef.current;
+                    if (!currentType) {
                       alert("Please select a data type first");
                       return;
                     }
                     try {
-                      const data = await agentBillingOperations.getAgentBillingByType(datasetType);
+                      // Load from unified_data collection using tradeOperations
+                      const data = await tradeOperations.getTradesByDataSource(currentType);
                       // Convert Firestore Timestamps to strings
-                      const convertedData = data.map((item: any) => {
+                      const convertedData = data.map((row: any) => {
                         const converted: any = {};
-                        for (const [key, value] of Object.entries(item)) {
-                          if (value && typeof value === 'object' && 'seconds' in value && 'nanoseconds' in value) {
-                            converted[key] = new Date(value.seconds * 1000).toISOString();
-                          } else if (value && typeof value === 'object') {
-                            converted[key] = JSON.stringify(value);
+                        Object.entries(row).forEach(([key, value]) => {
+                          if (
+                            value &&
+                            typeof value === "object" &&
+                            value !== null &&
+                            "seconds" in value &&
+                            typeof (value as any).seconds === "number"
+                          ) {
+                            converted[key] = new Date((value as any).seconds * 1000).toISOString();
                           } else {
                             converted[key] = value;
                           }
-                        }
+                        });
                         return converted;
                       });
                       setUploadedData(convertedData);
-                      setUploadedTradeData(convertedData);
-                      setUploadStep("complete");
-                    } catch (error) {
-                      console.error("Error loading data from Firebase:", error);
-                      alert(`Error loading data from Firebase: ${error instanceof Error ? error.message : 'Unknown error'}`);
+                      const headers = Object.keys(convertedData[0] || {});
+                      setDatasetType(currentType);
+                      setUploadAnalysis({ headers, detectedType: currentType });
+                      // Auto-map fields using the selected type
+                      const autoMapping = createAutoMappingFromTradeData(headers, currentType);
+                      setFieldMapping(autoMapping);
+                      setUploadStep("map");
+                    } catch (err) {
+                      alert("Failed to load data from Firebase");
                     }
                   }}
                   disabled={!datasetType || firebaseLoading}
@@ -1480,7 +1559,9 @@ export default function AgentBilling() {
                         const disputeInfo = checkTradeHasDispute(trade)
                         return (
                           <TableRow key={`${trade.tradeId}-${startIndex + index}`}>
-                            <TableCell className="font-medium font-mono text-sm">{trade.tradeId}</TableCell>
+                            <TableCell className="font-medium font-mono text-sm">
+                              {trade["TradeID"] || trade["tradeID"] || trade["Trade Id"] || trade.tradeId}
+                            </TableCell>
                             <TableCell>
                               <Badge
                                 variant="outline"
@@ -1500,8 +1581,8 @@ export default function AgentBilling() {
                                 : `$${((trade.notionalAmount || 0) * (trade.fxRate || 1)).toLocaleString()}`}
                             </TableCell>
                             <TableCell>{trade.currency || trade.baseCurrency || "USD"}</TableCell>
-                            <TableCell>{trade.tradeDate}</TableCell>
-                            <TableCell>{trade.settlementDate}</TableCell>
+                            <TableCell>{excelDateToJSDate(trade["TradeDate"] || trade["tradeDate"] || trade["Trade Date"] || trade.tradeDate)}</TableCell>
+                            <TableCell>{excelDateToJSDate(trade["SettlementDate"] || trade["settlementDate"] || trade["Settlement Date"] || trade.settlementDate)}</TableCell>
                             <TableCell>
                               <Badge
                                 variant={trade.settlementStatus === "Settled" ? "default" : "secondary"}
@@ -1545,15 +1626,6 @@ export default function AgentBilling() {
                                 >
                                   <Eye className="h-4 w-4 mr-1" />
                                   View Invoice
-                                </Button>
-                                <Button
-                                  onClick={() => forwardToInvoiceUpload(trade)}
-                                  variant="outline"
-                                  size="sm"
-                                  className="border-blue-500 text-blue-600 hover:bg-blue-50 bg-transparent"
-                                >
-                                  <ArrowRight className="h-4 w-4 mr-1" />
-                                  Forward
                                 </Button>
                               </div>
                             </TableCell>
@@ -1659,6 +1731,10 @@ export default function AgentBilling() {
         setUploadedTradeData(data)
         setTotalRecords(data.length)
       }
+      
+      // Also populate Payment Tracker data
+      const paymentData = transformToPaymentTrackerData(data)
+      setPaymentTrackerData(paymentData)
     } catch (error) {
       console.error("Error loading trade data:", error)
     }
@@ -1686,7 +1762,7 @@ export default function AgentBilling() {
       }
 
       const pool = trade.dataSource === "equity" ? agentPools.equity : agentPools.fx
-      const hash = trade.tradeId.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0)
+      const hash = trade.tradeId.split("").reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0)
       return pool[hash % pool.length]
     }
 
@@ -1820,7 +1896,7 @@ export default function AgentBilling() {
                   <span className="font-medium text-teal-700">Agent:</span> {forwardedInvoiceData.agentName}
                 </div>
                 <div>
-                  <span className="font-medium text-teal-700">Amount:</span> ${forwardedInvoiceData.amount.toFixed(2)}{" "}
+                  <span className="font-medium text-teal-700">Amount:</span> ${(forwardedInvoiceData.amount || 0).toFixed(2)}{" "}
                   {forwardedInvoiceData.currency}
                 </div>
                 <div>
@@ -2104,7 +2180,7 @@ export default function AgentBilling() {
       })
 
       // Ensure required fields are present
-      if (!tradeData.tradeId && !tradeData.tradeID) {
+      if (!tradeData.tradeId) {
         tradeData.tradeId = `AUTO-${datasetType?.toUpperCase()}-${index + 1}`
       }
 
@@ -2212,6 +2288,25 @@ export default function AgentBilling() {
         </Card>
       </div>
 
+      {/* Data Source Indicator */}
+      {uploadedTradeData.length > 0 ? (
+        <Alert className="border-green-200 bg-green-50">
+          <CheckCircle className="h-4 w-4" />
+          <AlertTitle>Live Data</AlertTitle>
+          <AlertDescription>
+            Dashboard is showing data from Firebase ({uploadedTradeData.length} trades loaded).
+          </AlertDescription>
+        </Alert>
+      ) : (
+        <Alert className="border-orange-200 bg-orange-50">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>Demo Data</AlertTitle>
+          <AlertDescription>
+            Dashboard is showing sample data. Go to the Data Upload tab and click "Source Data from Firebase" to load real data.
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card className="border-teal-200">
@@ -2226,7 +2321,7 @@ export default function AgentBilling() {
                   cx="50%"
                   cy="50%"
                   labelLine={false}
-                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                  label={({ name, percent }) => `${name} ${((percent || 0) * 100).toFixed(0)}%`}
                   outerRadius={80}
                   fill="#8884d8"
                   dataKey="value"
@@ -2312,7 +2407,7 @@ export default function AgentBilling() {
     const totalReconciled = reconciliationEntries.length
     const matchCount = reconciliationEntries.filter(([_, result]) => result.overallStatus === "reconciled").length
     const mismatchCount = reconciliationEntries.filter(([_, result]) => result.overallStatus === "mismatch").length
-    const partialCount = reconciliationEntries.filter(([_, result]) => result.overallStatus === "partial").length
+    const partialCount = reconciliationEntries.filter(([_, result]) => result.overallStatus === "matched").length
     const disputeCount = reconciliationEntries.filter(([_, result]) => result.hasDispute).length
 
     return (
@@ -2347,7 +2442,7 @@ export default function AgentBilling() {
             <CardContent className="p-4">
               <div className="text-center">
                 <div className="text-2xl font-bold text-blue-600">{partialCount}</div>
-                <div className="text-sm text-gray-600">Partial Matches</div>
+                <div className="text-sm text-gray-600">Matched</div>
               </div>
             </CardContent>
           </Card>
@@ -2477,14 +2572,24 @@ export default function AgentBilling() {
                   <TableBody>
                     {currentReconciliationResults.map(([tradeId, result]) => (
                       <TableRow key={tradeId}>
-                        <TableCell className="font-mono text-sm">{tradeId}</TableCell>
+                        <TableCell className="font-mono text-sm">
+                          {
+                            // Find the original trade object to get the real trade ID
+                            (() => {
+                              const trade = uploadedTradeData.find(
+                                t => t.tradeId === tradeId || t["TradeID"] === tradeId || t["tradeID"] === tradeId || t["Trade Id"] === tradeId
+                              );
+                              return trade ? (trade["TradeID"] || trade["tradeID"] || trade["Trade Id"] || trade.tradeId) : tradeId;
+                            })()
+                          }
+                        </TableCell>
                         <TableCell>
                           <Badge
                             variant="outline"
                             className={
                               result.overallStatus === "reconciled"
                                 ? "border-green-500 text-green-600"
-                                : result.overallStatus === "partial"
+                                : result.overallStatus === "matched"
                                   ? "border-blue-500 text-blue-600"
                                   : "border-red-500 text-red-600"
                             }
@@ -2594,7 +2699,7 @@ export default function AgentBilling() {
                         className={
                           selectedInvoiceForReconciliation.reconciliationDetails.overallStatus === "reconciled"
                             ? "border-green-500 text-green-600"
-                            : selectedInvoiceForReconciliation.reconciliationDetails.overallStatus === "partial"
+                            : selectedInvoiceForReconciliation.reconciliationDetails.overallStatus === "matched"
                               ? "border-blue-500 text-blue-600"
                               : "border-red-500 text-red-600"
                         }
@@ -2768,10 +2873,16 @@ export default function AgentBilling() {
         const matchingInvoice =
           invoices.find((inv) => inv.tradeId === tradeId) || uploadedInvoices.find((inv) => inv.tradeId === tradeId)
 
+        // Find the actual trade data to get the properly formatted Trade ID
+        const actualTrade = uploadedTradeData.find(
+          t => t.tradeId === tradeId || t["TradeID"] === tradeId || t["tradeID"] === tradeId || t["Trade Id"] === tradeId
+        );
+        const displayTradeId = actualTrade ? (actualTrade["TradeID"] || actualTrade["tradeID"] || actualTrade["Trade Id"] || actualTrade.tradeId) : tradeId;
+
         return {
           disputeId: `DSP-${(index + 1).toString().padStart(4, "0")}`,
-          tradeId: tradeId,
-          invoiceNumber: matchingInvoice?.invoiceNumber || `INV-${tradeId}-AUTO`,
+          tradeId: displayTradeId,
+          invoiceNumber: matchingInvoice?.invoiceNumber || `INV-${displayTradeId}-AUTO`,
           agent: result.actualValues.counterparty || matchingInvoice?.agentName || "Unknown Agent",
           disputeTypes: result.disputeTypes || [],
           status: result.overallStatus === "mismatch" ? "Open" : "Resolved",
@@ -3089,14 +3200,14 @@ export default function AgentBilling() {
                                         Expected Amount
                                       </div>
                                       <div className="text-sm font-medium text-green-600">
-                                        ${expectedAmount.toFixed(2)}
+                                        ${(expectedAmount || 0).toFixed(2)}
                                       </div>
                                     </div>
                                     <div>
                                       <div className="text-xs font-medium text-blue-700 dark:text-blue-300 uppercase tracking-wide">
                                         Billed Amount
                                       </div>
-                                      <div className="text-sm font-medium text-red-600">${billedAmount.toFixed(2)}</div>
+                                      <div className="text-sm font-medium text-red-600">${(billedAmount || 0).toFixed(2)}</div>
                                     </div>
                                   </div>
                                   <div>
@@ -3106,7 +3217,7 @@ export default function AgentBilling() {
                                     <div
                                       className={`text-sm font-medium ${variance > 0 ? "text-red-600" : "text-green-600"}`}
                                     >
-                                      {variance > 0 ? "+" : ""}${variance.toFixed(2)}
+                                      {variance > 0 ? "+" : ""}${(variance || 0).toFixed(2)}
                                     </div>
                                   </div>
                                   <div>
@@ -3417,6 +3528,839 @@ export default function AgentBilling() {
     )
   }
 
+  // Cost Allocation State
+  const [costAllocationData, setCostAllocationData] = useState<any[]>([])
+  const [allocationMethod, setAllocationMethod] = useState<"equal" | "proportional" | "custom">("equal")
+  const [allocationResults, setAllocationResults] = useState<any[]>([])
+  const [costDataFile, setCostDataFile] = useState<File | null>(null)
+  const [costDataHeaders, setCostDataHeaders] = useState<string[]>([])
+  const [costDataRows, setCostDataRows] = useState<any[]>([])
+  const [costFieldMapping, setCostFieldMapping] = useState<Record<string, string>>({})
+  const [showCostAllocationResults, setShowCostAllocationResults] = useState(false)
+  const [costAllocationLoading, setCostAllocationLoading] = useState(false)
+  const [editingRow, setEditingRow] = useState<number | null>(null)
+
+  // Payment Tracker State
+  const [paymentTrackerData, setPaymentTrackerData] = useState<any[]>([])
+  const [paymentTrackerLoading, setPaymentTrackerLoading] = useState(false)
+  const [selectedPaymentStatus, setSelectedPaymentStatus] = useState<string>("all")
+  const [selectedDepartment, setSelectedDepartment] = useState<string>("all")
+
+  // Cost Allocation Field Mapping
+  const costAllocationFields = [
+    { key: "agentId", label: "Agent ID", required: true },
+    { key: "agentName", label: "Agent Name", required: true },
+    { key: "tradeId", label: "Trade ID", required: true },
+    { key: "costType", label: "Cost Type", required: true },
+    { key: "amount", label: "Amount", required: true },
+    { key: "currency", label: "Currency", required: false },
+    { key: "costCenter", label: "Cost Center", required: false },
+    { key: "department", label: "Department", required: false },
+  ]
+
+  // Handle cost data file upload
+  const handleCostFileSelect = (event: any) => {
+    const file = event.target.files[0]
+    if (!file) return
+
+    setCostDataFile(file)
+    const reader = new FileReader()
+
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer)
+        const workbook = XLSX.read(data, { type: "array" })
+        const sheetName = workbook.SheetNames[0]
+        const worksheet = workbook.Sheets[sheetName]
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 })
+
+        if (jsonData.length > 0) {
+          const headers = jsonData[0] as string[]
+          const rows = jsonData.slice(1).map((row: any) => {
+            const obj: any = {}
+            headers.forEach((header, index) => {
+              obj[header] = row[index]
+            })
+            return obj
+          })
+
+          setCostDataHeaders(headers)
+          setCostDataRows(rows)
+          
+          // Auto-map fields
+          const autoMapping: Record<string, string> = {}
+          costAllocationFields.forEach(field => {
+            const matchingHeader = headers.find(header => 
+              header.toLowerCase().includes(field.key.toLowerCase()) ||
+              header.toLowerCase().includes(field.label.toLowerCase())
+            )
+            if (matchingHeader) {
+              autoMapping[field.key] = matchingHeader
+            }
+          })
+          setCostFieldMapping(autoMapping)
+        }
+      } catch (error) {
+        console.error("Error parsing cost data file:", error)
+      }
+    }
+
+    reader.readAsArrayBuffer(file)
+  }
+
+  // Create cost allocation from Firebase data
+  const createCostAllocationFromFirebase = async () => {
+    setCostAllocationLoading(true)
+    try {
+      // Use the existing agent billing data from Firebase
+      const firebaseData = await agentBillingOperations.getAllAgentBilling()
+      
+      // Transform Firebase data into cost allocation format
+      const costData = firebaseData.map((item: any) => ({
+        agentId: item.traderID || item.trader_id || "AGENT_" + Math.floor(Math.random() * 1000),
+        agentName: item.counterparty || item.broker || "Agent " + (item.traderID || "Unknown"),
+        tradeId: item.tradeId || item.trade_id || "TRADE_" + Math.floor(Math.random() * 1000),
+        costType: "Commission", // Default cost type
+        amount: item.commission || item.total_cost || Math.random() * 1000,
+        currency: item.currency || "USD",
+        costCenter: item.costCenter || "Trading",
+        department: item.department || "Front Office"
+      }))
+
+      setCostAllocationData(costData)
+      setCostDataRows(costData)
+      setShowCostAllocationResults(true)
+    } catch (error) {
+      console.error("Error loading cost data from Firebase:", error)
+    } finally {
+      setCostAllocationLoading(false)
+    }
+  }
+
+  // Perform cost allocation
+  const performCostAllocation = () => {
+    if (costAllocationData.length === 0) return
+
+    const results: any[] = []
+    const agents = [...new Set(costAllocationData.map(item => item.agentId))]
+    
+    // Group costs by trade
+    const tradeGroups: Record<string, any[]> = {}
+    costAllocationData.forEach(item => {
+      if (!tradeGroups[item.tradeId]) {
+        tradeGroups[item.tradeId] = []
+      }
+      tradeGroups[item.tradeId].push(item)
+    })
+
+    Object.entries(tradeGroups).forEach(([tradeId, costs]) => {
+      const totalCost = costs.reduce((sum, cost) => sum + (cost.amount || 0), 0)
+      
+      if (allocationMethod === "equal") {
+        // Equal split among all agents
+        const costPerAgent = totalCost / agents.length
+        agents.forEach(agentId => {
+          results.push({
+            tradeId,
+            agentId,
+            agentName: costAllocationData.find(item => item.agentId === agentId)?.agentName || agentId,
+            originalCost: totalCost,
+            allocatedAmount: costPerAgent,
+            allocationMethod: "Equal Split",
+            costType: costs[0]?.costType || "Commission",
+            currency: costs[0]?.currency || "USD",
+            status: "Allocated"
+          })
+        })
+      } else if (allocationMethod === "proportional") {
+        // Proportional allocation based on agent's contribution
+        const agentContributions: Record<string, number> = {}
+        costs.forEach(cost => {
+          agentContributions[cost.agentId] = (agentContributions[cost.agentId] || 0) + cost.amount
+        })
+        
+        const totalContribution = Object.values(agentContributions).reduce((sum, val) => sum + val, 0)
+        
+        Object.entries(agentContributions).forEach(([agentId, contribution]) => {
+          const allocatedAmount = (contribution / totalContribution) * totalCost
+          results.push({
+            tradeId,
+            agentId,
+            agentName: costAllocationData.find(item => item.agentId === agentId)?.agentName || agentId,
+            originalCost: totalCost,
+            allocatedAmount,
+            allocationMethod: "Proportional",
+            costType: costs[0]?.costType || "Commission",
+            currency: costs[0]?.currency || "USD",
+            status: "Allocated"
+          })
+        })
+      } else if (allocationMethod === "custom") {
+        // Custom allocation - for now, just copy original costs
+        costs.forEach(cost => {
+          results.push({
+            tradeId,
+            agentId: cost.agentId,
+            agentName: cost.agentName,
+            originalCost: cost.amount,
+            allocatedAmount: cost.amount,
+            allocationMethod: "Custom",
+            costType: cost.costType,
+            currency: cost.currency,
+            status: "Allocated"
+          })
+        })
+      }
+    })
+
+    setAllocationResults(results)
+    setShowCostAllocationResults(true)
+  }
+
+  // Update individual allocation status
+  const updateAllocationStatus = (index: number, newStatus: string) => {
+    const updatedResults = [...allocationResults]
+    updatedResults[index] = { ...updatedResults[index], status: newStatus }
+    setAllocationResults(updatedResults)
+  }
+
+  // Update individual allocation method
+  const updateAllocationMethod = (index: number, newMethod: string) => {
+    const updatedResults = [...allocationResults]
+    updatedResults[index] = { ...updatedResults[index], allocationMethod: newMethod }
+    setAllocationResults(updatedResults)
+  }
+
+  // Toggle edit mode for a row
+  const toggleEditRow = (index: number) => {
+    setEditingRow(editingRow === index ? null : index)
+  }
+
+  // Save changes for a row
+  const saveRowChanges = (index: number) => {
+    setEditingRow(null)
+  }
+
+  // Transform Firebase data into payment tracker format
+  const transformToPaymentTrackerData = (firebaseData: any[]) => {
+    return firebaseData.map((item: any, index: number) => {
+      const departments = [
+        "Network Management", "Reference Data", "Middle Office", "Confirmations",
+        "Collateral Management", "Cost Management", "Settlements", "Compliance"
+      ]
+      
+      // Generate random payment status based on index
+      const statusOptions = ["Pending Approval", "Cost Allocated", "Payment Instruction Sent", "Payment Confirmed", "Payment Failed"]
+      const statusIndex = index % statusOptions.length
+      const status = statusOptions[statusIndex]
+      
+      // Generate random department allocation
+      const departmentIndex = index % departments.length
+      const department = departments[departmentIndex]
+      
+      // Generate invoice details
+      const invoiceNumber = `INV-${item.tradeId || item.trade_id || "TRADE"}-${String(index + 1).padStart(3, '0')}`
+      const amount = item.commission || item.total_cost || Math.random() * 5000 + 1000
+      const dueDate = new Date(Date.now() + (Math.random() * 30 + 7) * 24 * 60 * 60 * 1000)
+      
+      return {
+        id: `payment-${index}`,
+        agentName: item.counterparty || item.broker || "Agent " + (item.traderID || "Unknown"),
+        invoiceNumber,
+        tradeId: item.tradeId || item.trade_id || "TRADE_" + Math.floor(Math.random() * 1000),
+        amount: amount,
+        currency: item.currency || "USD",
+        department,
+        status,
+        dueDate: dueDate.toISOString().split('T')[0],
+        costAllocation: {
+          "Network Management": Math.random() * 0.2,
+          "Reference Data": Math.random() * 0.15,
+          "Middle Office": Math.random() * 0.2,
+          "Confirmations": Math.random() * 0.1,
+          "Collateral Management": Math.random() * 0.15,
+          "Cost Management": Math.random() * 0.1,
+          "Settlements": Math.random() * 0.05,
+          "Compliance": Math.random() * 0.05
+        },
+        createdAt: item.created_at || new Date().toISOString(),
+        updatedAt: item.updated_at || new Date().toISOString()
+      }
+    })
+  }
+
+  // Update payment status
+  const updatePaymentStatus = (id: string, newStatus: string) => {
+    setPaymentTrackerData(prev => 
+      prev.map(item => 
+        item.id === id 
+          ? { ...item, status: newStatus, updatedAt: new Date().toISOString() }
+          : item
+      )
+    )
+  }
+
+  // Send to Settlements team
+  const sendToSettlements = (id: string) => {
+    updatePaymentStatus(id, "Payment Instruction Sent")
+  }
+
+  // Approve cost allocation
+  const approveCostAllocation = (id: string) => {
+    updatePaymentStatus(id, "Cost Allocated")
+  }
+
+  // Get filtered payment data
+  const getFilteredPaymentData = () => {
+    let filtered = paymentTrackerData
+
+    if (selectedPaymentStatus !== "all") {
+      filtered = filtered.filter(item => item.status === selectedPaymentStatus)
+    }
+
+    if (selectedDepartment !== "all") {
+      filtered = filtered.filter(item => item.department === selectedDepartment)
+    }
+
+    return filtered
+  }
+
+  // Get payment statistics
+  const getPaymentStats = () => {
+    const total = paymentTrackerData.length
+    const pending = paymentTrackerData.filter(item => item.status === "Pending Approval").length
+    const approved = paymentTrackerData.filter(item => item.status === "Cost Allocated").length
+    const sentToSettlements = paymentTrackerData.filter(item => item.status === "Payment Instruction Sent").length
+    const confirmed = paymentTrackerData.filter(item => item.status === "Payment Confirmed").length
+    const failed = paymentTrackerData.filter(item => item.status === "Payment Failed").length
+    const totalAmount = paymentTrackerData.reduce((sum, item) => sum + item.amount, 0)
+    const overdue = paymentTrackerData.filter(item => 
+      new Date(item.dueDate) < new Date() && item.status !== "Payment Confirmed"
+    ).length
+
+    return {
+      total,
+      pending,
+      approved,
+      sentToSettlements,
+      confirmed,
+      failed,
+      totalAmount,
+      overdue
+    }
+  }
+
+  // Render Payment Tracker Tab
+  const renderPaymentTracker = () => {
+    const stats = getPaymentStats()
+    const filteredData = getFilteredPaymentData()
+
+    return (
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex justify-between items-center">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Payment Tracker</h2>
+            <p className="text-gray-600 dark:text-gray-400">
+              Track agent invoice payments and cost allocation approvals
+            </p>
+          </div>
+          <div className="flex space-x-2">
+            {paymentTrackerData.length === 0 && (
+              <Alert className="border-yellow-300 bg-yellow-100 dark:bg-yellow-900">
+                <AlertTriangle className="h-4 w-4 text-yellow-600" />
+                <AlertTitle className="text-yellow-800 dark:text-yellow-200">No Data Available</AlertTitle>
+                <AlertDescription className="text-yellow-700 dark:text-yellow-300">
+                  Click "Source Data from Firebase" in the Data Upload tab to populate payment tracker data.
+                </AlertDescription>
+              </Alert>
+            )}
+          </div>
+        </div>
+
+        {/* Statistics Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <Card>
+            <CardContent className="p-4">
+              <div className="text-2xl font-bold text-blue-600">{stats.total}</div>
+              <div className="text-sm text-gray-600">Total Invoices</div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="text-2xl font-bold text-yellow-600">{stats.pending}</div>
+              <div className="text-sm text-gray-600">Pending Approval</div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="text-2xl font-bold text-green-600">{stats.confirmed}</div>
+              <div className="text-sm text-gray-600">Payment Confirmed</div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="text-2xl font-bold text-red-600">{stats.overdue}</div>
+              <div className="text-sm text-gray-600">Overdue Payments</div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Filters */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Filters</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Payment Status
+                </label>
+                <Select value={selectedPaymentStatus} onValueChange={setSelectedPaymentStatus}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Statuses</SelectItem>
+                    <SelectItem value="Pending Approval">Pending Approval</SelectItem>
+                    <SelectItem value="Cost Allocated">Cost Allocated</SelectItem>
+                    <SelectItem value="Payment Instruction Sent">Payment Instruction Sent</SelectItem>
+                    <SelectItem value="Payment Confirmed">Payment Confirmed</SelectItem>
+                    <SelectItem value="Payment Failed">Payment Failed</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Department
+                </label>
+                <Select value={selectedDepartment} onValueChange={setSelectedDepartment}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Departments</SelectItem>
+                    <SelectItem value="Network Management">Network Management</SelectItem>
+                    <SelectItem value="Reference Data">Reference Data</SelectItem>
+                    <SelectItem value="Middle Office">Middle Office</SelectItem>
+                    <SelectItem value="Confirmations">Confirmations</SelectItem>
+                    <SelectItem value="Collateral Management">Collateral Management</SelectItem>
+                    <SelectItem value="Cost Management">Cost Management</SelectItem>
+                    <SelectItem value="Settlements">Settlements</SelectItem>
+                    <SelectItem value="Compliance">Compliance</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Payment Tracker Table */}
+        {paymentTrackerData.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Payment Tracking</CardTitle>
+              <CardDescription>
+                Track agent invoice payments and cost allocation status
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="border rounded-lg overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Trade ID</TableHead>
+                      <TableHead>Agent</TableHead>
+                      <TableHead>Invoice</TableHead>
+                      <TableHead>Amount</TableHead>
+                      <TableHead>Department</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Due Date</TableHead>
+                      <TableHead>Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredData.map((item) => (
+                      <TableRow key={item.id}>
+                        <TableCell className="font-medium">{item.tradeId}</TableCell>
+                        <TableCell>{item.agentName}</TableCell>
+                        <TableCell>{item.invoiceNumber}</TableCell>
+                        <TableCell>${item.amount.toFixed(2)} {item.currency}</TableCell>
+                        <TableCell>{item.department}</TableCell>
+                        <TableCell>
+                          <Badge 
+                            className={
+                              item.status === "Payment Confirmed" ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300" :
+                              item.status === "Pending Approval" ? "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300" :
+                              item.status === "Cost Allocated" ? "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300" :
+                              item.status === "Payment Instruction Sent" ? "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300" :
+                              "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300"
+                            }
+                          >
+                            {item.status}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <span className={new Date(item.dueDate) < new Date() ? "text-red-600 font-medium" : ""}>
+                            {item.dueDate}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex space-x-2">
+                            {item.status === "Pending Approval" && (
+                              <Button
+                                size="sm"
+                                onClick={() => approveCostAllocation(item.id)}
+                                className="bg-green-600 hover:bg-green-700"
+                              >
+                                Approve
+                              </Button>
+                            )}
+                            {item.status === "Cost Allocated" && (
+                              <Button
+                                size="sm"
+                                onClick={() => sendToSettlements(item.id)}
+                                className="bg-blue-600 hover:bg-blue-700"
+                              >
+                                Send to Settlements
+                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                // View details modal could be added here
+                                console.log("View details for:", item.id)
+                              }}
+                            >
+                              <Eye className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Department Cost Allocation Summary */}
+        {paymentTrackerData.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Department Cost Allocation Summary</CardTitle>
+              <CardDescription>
+                Cost allocation breakdown across the 8 departments
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                {["Network Management", "Reference Data", "Middle Office", "Confirmations", 
+                  "Collateral Management", "Cost Management", "Settlements", "Compliance"].map((dept) => {
+                  const deptData = paymentTrackerData.filter(item => item.department === dept)
+                  const totalAmount = deptData.reduce((sum, item) => sum + item.amount, 0)
+                  const pendingCount = deptData.filter(item => item.status === "Pending Approval").length
+                  
+                  return (
+                    <Card key={dept} className="p-4">
+                      <div className="text-sm font-medium text-gray-600">{dept}</div>
+                      <div className="text-lg font-bold text-gray-900">${totalAmount.toFixed(2)}</div>
+                      <div className="text-xs text-gray-500">{pendingCount} pending</div>
+                    </Card>
+                  )
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    )
+  }
+
+  // Render Cost Allocation Tab
+  const renderCostAllocation = () => (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Cost Allocation</h2>
+          <p className="text-gray-600 dark:text-gray-400">
+            Allocate costs across different agents and cost centers
+          </p>
+        </div>
+        <div className="flex space-x-2">
+          <Button
+            onClick={createCostAllocationFromFirebase}
+            disabled={costAllocationLoading}
+            className="bg-teal-600 hover:bg-teal-700"
+          >
+            {costAllocationLoading ? (
+              <>
+                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                Loading...
+              </>
+            ) : (
+              <>
+                <Eye className="h-4 w-4 mr-2" />
+                Source Data from Firebase
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
+
+      {/* Data Upload Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center">
+            <Upload className="h-5 w-5 mr-2" />
+            Cost Data Upload
+          </CardTitle>
+          <CardDescription>
+            Upload cost data or use existing Firebase data for allocation
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Upload Cost Data File
+              </label>
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={handleCostFileSelect}
+                className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-teal-50 file:text-teal-700 hover:file:bg-teal-100"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Allocation Method
+              </label>
+              <Select value={allocationMethod} onValueChange={(value: any) => setAllocationMethod(value)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="equal">Equal Split</SelectItem>
+                  <SelectItem value="proportional">Proportional</SelectItem>
+                  <SelectItem value="custom">Custom</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {costDataRows.length > 0 && (
+            <div className="mt-4">
+              <div className="flex justify-between items-center mb-2">
+                <h3 className="text-lg font-semibold">Cost Data Preview</h3>
+                <Button onClick={performCostAllocation} className="bg-blue-600 hover:bg-blue-700">
+                  Perform Allocation
+                </Button>
+              </div>
+              <div className="border rounded-lg overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Agent ID</TableHead>
+                      <TableHead>Agent Name</TableHead>
+                      <TableHead>Trade ID</TableHead>
+                      <TableHead>Cost Type</TableHead>
+                      <TableHead>Amount</TableHead>
+                      <TableHead>Currency</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {costDataRows.slice(0, 10).map((row, index) => (
+                      <TableRow key={index}>
+                        <TableCell>{row.agentId || row.AgentID || "N/A"}</TableCell>
+                        <TableCell>{row.agentName || row.AgentName || "N/A"}</TableCell>
+                        <TableCell>{row.tradeId || row.TradeID || "N/A"}</TableCell>
+                        <TableCell>{row.costType || row.CostType || "Commission"}</TableCell>
+                        <TableCell>${(row.amount || row.Amount || 0).toFixed(2)}</TableCell>
+                        <TableCell>{row.currency || row.Currency || "USD"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              {costDataRows.length > 10 && (
+                <p className="text-sm text-gray-500 mt-2">
+                  Showing first 10 rows of {costDataRows.length} total rows
+                </p>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Allocation Results */}
+      {showCostAllocationResults && allocationResults.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center">
+              <BarChart3 className="h-5 w-5 mr-2" />
+              Allocation Results
+            </CardTitle>
+            <CardDescription>
+              Cost allocation results based on {allocationMethod} method
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {/* Summary Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="text-2xl font-bold text-teal-600">
+                      {allocationResults.length}
+                    </div>
+                    <div className="text-sm text-gray-600">Total Allocations</div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="text-2xl font-bold text-blue-600">
+                      {new Set(allocationResults.map(r => r.tradeId)).size}
+                    </div>
+                    <div className="text-sm text-gray-600">Unique Trades</div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="text-2xl font-bold text-green-600">
+                      {new Set(allocationResults.map(r => r.agentId)).size}
+                    </div>
+                    <div className="text-sm text-gray-600">Agents Involved</div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="text-2xl font-bold text-purple-600">
+                      ${allocationResults.reduce((sum, r) => sum + r.allocatedAmount, 0).toFixed(2)}
+                    </div>
+                    <div className="text-sm text-gray-600">Total Allocated</div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Results Table */}
+              <div className="border rounded-lg overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Trade ID</TableHead>
+                      <TableHead>Agent</TableHead>
+                      <TableHead>Original Cost</TableHead>
+                      <TableHead>Allocated Amount</TableHead>
+                      <TableHead>Method</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {allocationResults.map((result, index) => (
+                      <TableRow key={index}>
+                        <TableCell className="font-medium">{result.tradeId}</TableCell>
+                        <TableCell>{result.agentName}</TableCell>
+                        <TableCell>${result.originalCost.toFixed(2)}</TableCell>
+                        <TableCell>${result.allocatedAmount.toFixed(2)}</TableCell>
+                        <TableCell>
+                          {editingRow === index ? (
+                            <Select 
+                              value={result.allocationMethod} 
+                              onValueChange={(value) => updateAllocationMethod(index, value)}
+                            >
+                              <SelectTrigger className="w-32">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="Equal Split">Equal Split</SelectItem>
+                                <SelectItem value="Proportional">Proportional</SelectItem>
+                                <SelectItem value="Custom">Custom</SelectItem>
+                                <SelectItem value="Manual">Manual</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <Badge variant="outline">{result.allocationMethod}</Badge>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {editingRow === index ? (
+                            <Select 
+                              value={result.status} 
+                              onValueChange={(value) => updateAllocationStatus(index, value)}
+                            >
+                              <SelectTrigger className="w-32">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="Pending">Pending</SelectItem>
+                                <SelectItem value="Allocated">Allocated</SelectItem>
+                                <SelectItem value="Approved">Approved</SelectItem>
+                                <SelectItem value="Rejected">Rejected</SelectItem>
+                                <SelectItem value="Under Review">Under Review</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <Badge 
+                              className={
+                                result.status === "Allocated" ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300" :
+                                result.status === "Pending" ? "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300" :
+                                result.status === "Approved" ? "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300" :
+                                result.status === "Rejected" ? "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300" :
+                                "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-300"
+                              }
+                            >
+                              {result.status}
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex space-x-2">
+                            {editingRow === index ? (
+                              <>
+                                <Button
+                                  size="sm"
+                                  onClick={() => saveRowChanges(index)}
+                                  className="bg-green-600 hover:bg-green-700"
+                                >
+                                  <Check className="h-3 w-3" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setEditingRow(null)}
+                                >
+                                  <X className="h-3 w-3" />
+                                </Button>
+                              </>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => toggleEditRow(index)}
+                              >
+                                <Settings className="h-3 w-3" />
+                              </Button>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+
   const renderContent = () => {
     switch (activeTab) {
       case "dashboard":
@@ -3432,11 +4376,7 @@ export default function AgentBilling() {
       case "disputes":
         return renderDisputes()
       case "allocation":
-        return renderPlaceholderTab(
-          "Cost Allocation",
-          "Allocate costs across different cost centers and departments.",
-          Target,
-        )
+        return renderCostAllocation()
       case "approval":
         return renderPlaceholderTab(
           "Approval Workflow",
@@ -3444,7 +4384,7 @@ export default function AgentBilling() {
           CheckCircle,
         )
       case "payment":
-        return renderPlaceholderTab("Payment Tracker", "Track payment status and manage payment schedules.", CreditCard)
+        return renderPaymentTracker()
       case "audit":
         return renderPlaceholderTab("Audit & Compliance", "Audit trails and compliance reporting features.", Shield)
       case "reports":
@@ -3461,16 +4401,16 @@ export default function AgentBilling() {
       <div className="flex">
         {/* Sidebar */}
         <div
-          className={`${sidebarCollapsed ? "w-16" : "w-64"} bg-white dark:bg-gray-800 shadow-lg transition-all duration-300`}
+          className={`${sidebarCollapsed ? "w-16" : "w-64"} bg-sidebar shadow-lg transition-all duration-300`}
         >
-          <div className="p-4 border-b border-gray-200 dark:border-gray-700">
+          <div className="p-4 border-b border-sidebar-border/20">
             <div className="flex items-center justify-between">
-              {!sidebarCollapsed && <h1 className="text-xl font-bold text-gray-900 dark:text-white">Agent Billing</h1>}
+              {!sidebarCollapsed && <h1 className="text-xl font-bold text-sidebar-foreground">Agent Billing</h1>}
               <Button
                 onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
                 variant="ghost"
                 size="icon"
-                className="text-gray-500 hover:text-gray-700"
+                className="text-sidebar-foreground/70 hover:text-sidebar-foreground"
               >
                 {sidebarCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
               </Button>
@@ -3486,8 +4426,8 @@ export default function AgentBilling() {
                   onClick={() => setActiveTab(item.id)}
                   className={`w-full flex items-center px-3 py-2 rounded-lg text-left transition-colors ${
                     activeTab === item.id
-                      ? "bg-teal-100 text-teal-700 dark:bg-teal-900 dark:text-teal-300"
-                      : "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                      : "text-sidebar-foreground/80 hover:bg-sidebar-accent/20 hover:text-sidebar-foreground"
                   }`}
                 >
                   <IconComponent className="h-5 w-5 flex-shrink-0" />
