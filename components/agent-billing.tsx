@@ -4397,13 +4397,13 @@ export default function AgentBilling() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 border-l-2 border-white">
       <div className="flex">
         {/* Sidebar */}
         <div
           className={`${sidebarCollapsed ? "w-16" : "w-64"} bg-sidebar shadow-lg transition-all duration-300`}
         >
-          <div className="p-4 border-b border-sidebar-border/20">
+          <div className="p-4 border-b-2 border-white">
             <div className="flex items-center justify-between">
               {!sidebarCollapsed && <h1 className="text-xl font-bold text-sidebar-foreground">Agent Billing</h1>}
               <Button

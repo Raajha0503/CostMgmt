@@ -490,7 +490,7 @@ export default function ForwardToSettlements() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto py-8 space-y-8">
+    <div className="max-w-3xl mx-auto py-8 space-y-8 border-l-2 border-white">
       <div
         onDrop={handleDrop}
         onDragOver={handleDragOver}

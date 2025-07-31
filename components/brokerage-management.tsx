@@ -37,9 +37,9 @@ export default function BrokerageManagement({}: BrokerageManagementProps) {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 border-l-2 border-white">
       {/* Salesforce-inspired Header */}
-      <div className="bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 shadow-sm">
+      <div className="bg-white dark:bg-gray-800 border-b-2 border-white shadow-sm">
         <div className="max-w-7xl mx-auto px-6 py-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">

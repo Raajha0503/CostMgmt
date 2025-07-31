@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { AlertTriangle, CheckCircle, Upload, BarChart3, CreditCard, Bot, Download, Eye, ChevronLeft, ChevronRight, Settings, ArrowRight } from "lucide-react"
+import { AlertTriangle, CheckCircle, Upload, BarChart3, CreditCard, Bot, Download, Eye, ChevronLeft, ChevronRight, Settings, ArrowRight, Info, X } from "lucide-react"
 import {
   fetchTradeData,
   calculateSummaryMetrics,
@@ -1029,7 +1029,6 @@ export default function CMTAApp() {
     "Cost Allocation",
   ];
   const [experimentSubTab, setExperimentSubTab] = useState(experimentSubTabs[0]);
-  const [experimentTabsExpanded, setExperimentTabsExpanded] = useState(false);
 
   // New Agreement Setup Table State
   const [unifiedRows, setUnifiedRows] = useState<any[]>([])
@@ -1039,8 +1038,11 @@ export default function CMTAApp() {
   const [editedRows, setEditedRows] = useState<{ [id: string]: any }>({})
   const [saveLoading, setSaveLoading] = useState(false)
 
-  // Use column names directly as Firestore field names
+  // Use column names directly as Firestore field names (including auto-generated columns)
   const unifiedColumns = [
+    'Generated on',      // Auto-generated: current date when created
+    'Last modified',     // Auto-generated: current date when updated  
+    'version',          // Auto-generated: v1, v2, v3... (incremental)
     'Broker',
     'BrokerageCurrency',
     'BrokerageFee',
@@ -1056,11 +1058,268 @@ export default function CMTAApp() {
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const [toastType, setToastType] = useState<'success' | 'error' | null>(null)
 
+  // Info modal state
+  const [showFilteringInfo, setShowFilteringInfo] = useState(false)
+  const [currentFilteringInfo, setCurrentFilteringInfo] = useState<string>('')
+
+  // Column visibility state for each subtab
+  const [visibleUnifiedColumns, setVisibleUnifiedColumns] = useState<string[]>([])
+  const [visibleRefColumns, setVisibleRefColumns] = useState<string[]>([]) 
+  const [visibleTradeColumns, setVisibleTradeColumns] = useState<string[]>([])
+  const [visibleEnrichColumns, setVisibleEnrichColumns] = useState<string[]>([])
+  const [visibleConfColumns, setVisibleConfColumns] = useState<string[]>([])
+  const [visibleClearColumns, setVisibleClearColumns] = useState<string[]>([])
+  const [visibleExcColumns, setVisibleExcColumns] = useState<string[]>([])
+  const [visibleCostColumns, setVisibleCostColumns] = useState<string[]>([])
+
+  // Filtering logic explanations for each subtab
+  const filteringExplanations: Record<string, { title: string; logic: string[]; purpose: string }> = {
+    "Agreement Setup": {
+      title: "Agreement Setup - Data Filtering",
+      logic: [
+        "• Shows ALL records from unified_data collection",
+        "• No filtering applied - displays complete dataset", 
+        "• Used for initial setup and agreement creation"
+      ],
+      purpose: "This is the starting point where you set up CMTA agreements and client information. All available data is shown so you can create and manage agreements."
+    },
+    "Reference Data Mapping": {
+      title: "Reference Data Mapping - Data Filtering", 
+      logic: [
+        "• Filters: CMTA Agreement Status = 'Signed'",
+        "• Only shows records with signed agreements",
+        "• Prerequisite: Agreement Setup must be completed"
+      ],
+      purpose: "Only clients with signed CMTA agreements can proceed to reference data mapping. This ensures proper authorization before sensitive data mapping."
+    },
+    "Trade Capture": {
+      title: "Trade Capture - Data Filtering",
+      logic: [
+        "• Filters: CMTA Agreement Status = 'Signed'",
+        "• AND: Reference_Data_Validated = 'Yes'", 
+        "• Double filtering ensures prerequisites are met",
+        "• Progressive workflow validation"
+      ],
+      purpose: "Trade capture requires both signed agreements AND validated reference data. This prevents trades from being captured without proper setup."
+    },
+    "Trade Enrichment and routing": {
+      title: "Trade Enrichment & Routing - Data Filtering",
+      logic: [
+        "• Filters: CMTA Agreement Status = 'Signed'",
+        "• AND: Reference_Data_Validated = 'Yes'",
+        "• AND: TradeStatus = 'Booked'",
+        "• Triple filtering ensures all prerequisites are met",
+        "• Strict validation for enrichment readiness"
+      ],
+      purpose: "Trade enrichment requires signed agreements, validated reference data, AND booked trade status. This ensures only fully prepared trades proceed to enrichment and routing."
+    },
+    "Confirmations": {
+      title: "Confirmations - Data Filtering",
+      logic: [
+        "• Filters: CMTA Agreement Status = 'Signed'",
+        "• AND: Reference_Data_Validated = 'Yes'",
+        "• AND: TradeStatus = 'Booked'", 
+        "• AND: Instrument_Status = 'Active'",
+        "• Strictest filtering for final confirmation stage"
+      ],
+      purpose: "Confirmations only process fully enriched and active trades. All previous workflow steps must be completed successfully."
+    },
+    "Clearing and Settlement": {
+      title: "Clearing & Settlement - Data Filtering",
+      logic: [
+        "• Filters: CMTA Agreement Status = 'Signed'",
+        "• AND: Reference_Data_Validated = 'Yes'",
+        "• AND: TradeStatus = 'Booked'",
+        "• AND: Instrument_Status = 'Active'",
+        "• AND: ConfirmationStatus = 'Confirmed'",
+        "• Only confirmed trades proceed to clearing"
+      ],
+      purpose: "Settlement requires fully confirmed trades. This is the final processing stage where trades are actually settled and cleared."
+    },
+    "Exception Management": {
+      title: "Exception Management - Data Filtering",
+      logic: [
+        "• Shows records with exceptions or failed validations",
+        "• Filters: ExceptionType exists OR ExceptionFlag = 'Yes'",
+        "• OR: TradeStatus = 'Failed' OR SettlementStatus = 'Failed'",
+        "• OR: ConfirmationStatus = 'Failed' OR Reference_Data_Validated = 'No'",
+        "• Focuses on problems that need resolution"
+      ],
+      purpose: "Identifies and tracks all trades with issues across any workflow stage. Helps operations teams prioritize and resolve problems."
+    },
+    "Cost Allocation": {
+      title: "Cost Allocation - Data Filtering", 
+      logic: [
+        "• Filters: CMTA Agreement Status = 'Signed'",
+        "• AND: SettlementStatus = 'Settled'",
+        "• Only fully settled trades are eligible",
+        "• Ensures accurate cost allocation on completed trades"
+      ],
+      purpose: "Cost allocation happens after successful settlement. This ensures costs are only allocated to trades that have been fully processed and completed."
+    }
+  }
+
+  // Agreement Document Table State
+  const [showAgreementDocTable, setShowAgreementDocTable] = useState(false)
+  const [agreementRows, setAgreementRows] = useState<any[]>([])
+  const [agreementLoading, setAgreementLoading] = useState(false)
+  const [agreementEditedRows, setAgreementEditedRows] = useState<{ [id: string]: any }>({})
+  const [agreementStatusSaveLoading, setAgreementStatusSaveLoading] = useState(false)
+  const agreementColumns = [
+    'Broker',
+    'client',
+    'BrokerageFee',
+    'EffectiveDate_Equity',
+    'EffectiveDate_Forex',
+    'LEI',
+    'clientId',
+    'CMTA Agreement Status',
+    'commission rate agreed',
+    'View agreement',
+    'signed agreement',
+    'Generated on',
+    'Last modified',
+    'version',
+    'id',
+  ]
+
+  // Clearing and Settlement Table State
+  const [clearingRows, setClearingRows] = useState<any[]>([])
+  const [clearingLoading, setClearingLoading] = useState(false)
+  const [clearingEditedRows, setClearingEditedRows] = useState<{ [id: string]: any }>({})
+  const [clearingSaveLoading, setClearingSaveLoading] = useState(false)
+  const clearingColumns = [
+    'TradeID',
+    'SettlementDate',
+    'SettlementStatus',
+    'ClearingHouse',
+    'MarginRequirement',
+    'CollateralType',
+    'SettlementMethod',
+    'SettlementAmount',
+    'CustodianAccount',
+    'id',
+  ]
+
+  // Exception Management Table State
+  const [exceptionRows, setExceptionRows] = useState<any[]>([])
+  const [exceptionLoading, setExceptionLoading] = useState(false)
+  const [exceptionEditedRows, setExceptionEditedRows] = useState<{ [id: string]: any }>({})
+  const [exceptionSaveLoading, setExceptionSaveLoading] = useState(false)
+  const exceptionColumns = [
+    'TradeID',
+    'ExceptionType',
+    'ExceptionDescription',
+    'Priority',
+    'AssignedTo',
+    'Status',
+    'ResolutionNotes',
+    'CreatedDate',
+    'ResolvedDate',
+    'id',
+  ]
+
+  // Cost Allocation Table State
+  const [costDetailsRows, setCostDetailsRows] = useState<any[]>([])
+  const [costDetailsLoading, setCostDetailsLoading] = useState(false)
+  const [costDetailsEditedRows, setCostDetailsEditedRows] = useState<{ [id: string]: any }>({})
+  const [costDetailsSaveLoading, setCostDetailsSaveLoading] = useState(false)
+  const costDetailsColumns = [
+    'TradeID',
+    'CommissionAmount',
+    'BrokerageFee',
+    'CustodyFee',
+    'SettlementCost',
+    'FXGainLoss',
+    'threshold',
+    'ExpenseApprovalStatus',
+    'CostAllocationStatus',
+    'CostBookedDate',
+    'id',
+  ]
+
+  // Clearing and Settlement state variables  
+  const [clearRows, setClearRows] = useState<any[]>([])
+  const [clearLoading, setClearLoading] = useState(false)
+  const [clearEditedRows, setClearEditedRows] = useState<{ [id: string]: any }>({})
+  const [clearSaveLoading, setClearSaveLoading] = useState(false)
+  const [clearUpdatingId, setClearUpdatingId] = useState<string | null>(null)
+  const clearColumns = [
+    'TradeID',
+    'SettlementDate', 
+    'SettlementStatus',
+    'ClearingHouse',
+    'MarginRequirement',
+    'CollateralType',
+    'SettlementMethod',
+    'SettlementAmount',
+    'CustodianAccount',
+    'SettlementCurrency',
+    'ValueDate',
+    'id'
+  ]
+
+  const [excRows, setExcRows] = useState<any[]>([])
+  const [excLoading, setExcLoading] = useState(false)
+  const [excEditedRows, setExcEditedRows] = useState<{ [id: string]: any }>({})
+  const [excSaveLoading, setExcSaveLoading] = useState(false)
+  const [excUpdatingId, setExcUpdatingId] = useState<string | null>(null)
+  const excColumns = [
+    'TradeID',
+    'ExceptionType',
+    'ExceptionFlag',
+    'Exception Description',
+    'Exception Reason',
+    'Priority',
+    'AssignedTo',
+    'Status',
+    'ResolutionNotes',
+    'CreatedDate',
+    'id'
+  ]
+
+  const [exceptionTrackerRows, setExceptionTrackerRows] = useState<any[]>([])
+  const [exceptionTrackerLoading, setExceptionTrackerLoading] = useState(false)
+  const [exceptionTrackerEditedRows, setExceptionTrackerEditedRows] = useState<{ [id: string]: any }>({})
+  const [exceptionTrackerSaveLoading, setExceptionTrackerSaveLoading] = useState(false)
+  const exceptionTrackerColumns = [
+    'TradeID',
+    'Source Tab',
+    'Error Category', 
+    'Owner Team',
+    'Resolution Status',
+    'Timestamped Comments',
+    'Status',
+    'id'
+  ]
+
+  const [costRows, setCostRows] = useState<any[]>([])
+  const [costLoading, setCostLoading] = useState(false)
+  const [costEditedRows, setCostEditedRows] = useState<{ [id: string]: any }>({})
+  const [costSaveLoading, setCostSaveLoading] = useState(false)
+  const [costUpdatingId, setCostUpdatingId] = useState<string | null>(null)
+  const costColumns = [
+    'TradeID',
+    'CostAllocationStatus',
+    'CostBookedDate',
+    'CostCenter',
+    'CommissionAmount',
+    'BrokerageFee',
+    'SettlementCost',
+    'TotalCost',
+    'ExpenseApprovalStatus',
+    'id'
+  ]
+
   // Fetch data from Firestore
   const fetchUnifiedData = async () => {
     setUnifiedLoading(true)
     try {
+      console.log('🔄 Fetching unified data...')
       const data = await tradeOperations.getAllTrades()
+      console.log('📊 Raw data from Firebase:', data)
+      console.log('📊 Data length:', Array.isArray(data) ? data.length : 'Not an array')
+      
       // Map Firestore fields to UI columns
       const mapped = Array.isArray(data)
         ? data.map((row: any) => {
@@ -1072,9 +1331,93 @@ export default function CMTAApp() {
             return obj
           })
         : []
+      
+      console.log('✅ Mapped data:', mapped)
+      console.log('✅ Mapped data length:', mapped.length)
       setUnifiedRows(mapped)
+      
+      if (mapped.length === 0) {
+        setToastMsg('No data found in Firebase unified_data collection. Click "Create Sample Data" to get started.')
+        setToastType('error')
+      } else {
+        setToastMsg(`Loaded ${mapped.length} records successfully`)
+        setToastType('success')
+      }
+    } catch (error) {
+      console.error('❌ Error fetching unified data:', error)
+      setToastMsg(`Error fetching data: ${error}`)
+      setToastType('error')
     } finally {
       setUnifiedLoading(false)
+    }
+  }
+
+  // Create sample agreement data with auto-generated columns
+  const createSampleAgreementData = async () => {
+    try {
+      const currentDate = new Date().toLocaleDateString()
+      const sampleData = [
+        {
+          trade_id: 'CMTA-001',
+          data_source: 'equity' as const,
+          'Generated on': currentDate,
+          'Last modified': currentDate,
+          'version': 'v1.0',
+          'Broker': 'Goldman Sachs',
+          'BrokerageCurrency': 'USD',
+          'BrokerageFee': '0.25%',
+          'EffectiveDate_Equity': currentDate,
+          'EffectiveDate_Forex': currentDate,
+          'LEI': '7LTWFZYICNSX8D621K86',
+          'client': 'Barclays Capital',
+          'clientId': 'BC001'
+        },
+        {
+          trade_id: 'CMTA-002',
+          data_source: 'equity' as const,
+          'Generated on': currentDate,
+          'Last modified': currentDate,
+          'version': 'v1.1',
+          'Broker': 'JPMorgan Chase',
+          'BrokerageCurrency': 'USD',
+          'BrokerageFee': '0.30%',
+          'EffectiveDate_Equity': currentDate,
+          'EffectiveDate_Forex': currentDate,
+          'LEI': '8IHUB1SGFKMX4T648C86',
+          'client': 'Morgan Stanley',
+          'clientId': 'MS002'
+        },
+        {
+          trade_id: 'CMTA-003',
+          data_source: 'equity' as const,
+          'Generated on': currentDate,
+          'Last modified': currentDate,
+          'version': 'v2.0',
+          'Broker': 'Deutsche Bank',
+          'BrokerageCurrency': 'EUR',
+          'BrokerageFee': '0.20%',
+          'EffectiveDate_Equity': currentDate,
+          'EffectiveDate_Forex': currentDate,
+          'LEI': '9KFYN2X7AHBF5P892D45',
+          'client': 'Credit Suisse',
+          'clientId': 'CS003'
+        }
+      ]
+
+      // Save sample data to Firebase
+      for (const item of sampleData) {
+        await tradeOperations.createTrade(item)
+      }
+
+      setToastMsg(`✅ Created ${sampleData.length} sample agreement records`)
+      setToastType('success')
+      
+      // Refresh the table
+      await fetchUnifiedData()
+    } catch (error) {
+      console.error('Error creating sample data:', error)
+      setToastMsg('❌ Failed to create sample data')
+      setToastType('error')
     }
   }
 
@@ -1211,15 +1554,14 @@ export default function CMTAApp() {
   const fetchEnrichData = async () => {
     setEnrichLoading(true)
     try {
-      // Triple filtering: Signed + Validated + Booked
       const q = query(
         collection(db, 'unified_data'), 
         where('CMTA Agreement Status', '==', 'Signed'),
         where('Reference_Data_Validated', '==', 'Yes'),
         where('TradeStatus', '==', 'Booked')
       )
-      const snapshot = await getDocs(q)
-      const data = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      const querySnapshot = await getDocs(q)
+      const data = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
       
       const mapped = Array.isArray(data)
         ? data.map((row: any) => {
@@ -1283,6 +1625,251 @@ export default function CMTAApp() {
     }
   }
 
+  // Fetch Agreement Document data
+  const fetchAgreementRows = async () => {
+    setAgreementLoading(true)
+    try {
+      const data = await tradeOperations.getAllTrades()
+      const mapped = Array.isArray(data)
+        ? data.map((row: any) => {
+            const obj: any = {}
+            agreementColumns.forEach((col) => {
+              obj[col] = row[col] ?? ''
+            })
+            obj.id = row.id
+            return obj
+          })
+        : []
+      setAgreementRows(mapped)
+    } finally {
+      setAgreementLoading(false)
+    }
+  }
+
+  // Fetch Clearing and Settlement data
+  const fetchClearingData = async () => {
+    setClearingLoading(true)
+    try {
+      // Filter for confirmed trades
+      const q = query(
+        collection(db, 'unified_data'), 
+        where('CMTA Agreement Status', '==', 'Signed'),
+        where('Reference_Data_Validated', '==', 'Yes'),
+        where('TradeStatus', '==', 'Booked'),
+        where('Instrument_Status', '==', 'Active'),
+        where('ConfirmationStatus', '==', 'Confirmed')
+      )
+      const snapshot = await getDocs(q)
+      const data = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      
+      const mapped = Array.isArray(data)
+        ? data.map((row: any) => {
+            const obj: any = {}
+            clearingColumns.forEach((col) => {
+              obj[col] = row[col] ?? ''
+            })
+            obj.id = row.id
+            return obj
+          })
+        : []
+      setClearingRows(mapped)
+    } finally {
+      setClearingLoading(false)
+    }
+  }
+
+  // Fetch Exception Management data
+  const fetchExceptionData = async () => {
+    setExceptionLoading(true)
+    try {
+      const data = await tradeOperations.getAllTrades()
+      // Filter for trades with exceptions
+      const exceptions = data.filter((trade: any) => 
+        trade.ExceptionType || 
+        trade.Status === 'Exception' ||
+        trade.TradeStatus === 'Failed' ||
+        trade.SettlementStatus === 'Failed'
+      )
+      
+      const mapped = Array.isArray(exceptions)
+        ? exceptions.map((row: any) => {
+            const obj: any = {}
+            exceptionColumns.forEach((col) => {
+              obj[col] = row[col] ?? ''
+            })
+            obj.id = row.id
+            return obj
+          })
+        : []
+      setExceptionRows(mapped)
+    } finally {
+      setExceptionLoading(false)
+    }
+  }
+
+  // Fetch Cost Details data
+  const fetchCostDetailsData = async () => {
+    setCostDetailsLoading(true)
+    try {
+      // Filter for settled trades
+      const q = query(
+        collection(db, 'unified_data'), 
+        where('CMTA Agreement Status', '==', 'Signed'),
+        where('SettlementStatus', '==', 'Settled')
+      )
+      const snapshot = await getDocs(q)
+      const data = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      
+      const mapped = Array.isArray(data)
+        ? data.map((row: any) => {
+            const obj: any = {}
+            costDetailsColumns.forEach((col) => {
+              obj[col] = row[col] ?? ''
+            })
+            obj.id = row.id
+            return obj
+          })
+        : []
+      setCostDetailsRows(mapped)
+    } finally {
+      setCostDetailsLoading(false)
+    }
+  }
+
+  // Updated fetch functions with proper filtering
+  const fetchClearData = async () => {
+    setClearLoading(true)
+    try {
+      // Filter for confirmed trades (same logic as fetchClearingData)
+      const q = query(
+        collection(db, 'unified_data'), 
+        where('CMTA Agreement Status', '==', 'Signed'),
+        where('Reference_Data_Validated', '==', 'Yes'),
+        where('TradeStatus', '==', 'Booked'),
+        where('Instrument_Status', '==', 'Active'),
+        where('ConfirmationStatus', '==', 'Confirmed')
+      )
+      const snapshot = await getDocs(q)
+      const data = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      
+      const mapped = Array.isArray(data)
+        ? data.map((row: any) => {
+            const obj: any = {}
+            clearColumns.forEach((col) => {
+              obj[col] = row[col] ?? ''
+            })
+            obj.id = row.id
+            return obj
+          })
+        : []
+      setClearRows(mapped)
+    } finally {
+      setClearLoading(false)
+    }
+  }
+
+  const fetchExcData = async () => {
+    setExcLoading(true)
+    try {
+      // Filter for trades with exceptions or issues
+      const snapshot = await getDocs(collection(db, "unified_data"))
+      const allRecords = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      
+      // Filter records that have exceptions or failed validations
+      const exceptions = allRecords.filter((record: any) => 
+        record.ExceptionType || 
+        record.ExceptionFlag === 'Yes' ||
+        record.TradeStatus === 'Failed' ||
+        record.SettlementStatus === 'Failed' ||
+        record.ConfirmationStatus === 'Failed' ||
+        record.Reference_Data_Validated === 'No'
+      )
+      
+      const mapped = exceptions.map((row: any) => {
+        const obj: any = {}
+        excColumns.forEach((col) => {
+          obj[col] = row[col] ?? ''
+        })
+        obj.id = row.id
+        return obj
+      })
+      setExcRows(mapped)
+    } finally {
+      setExcLoading(false)
+    }
+  }
+
+  const fetchExceptionTrackerData = async () => {
+    setExceptionTrackerLoading(true)
+    try {
+      const snapshot = await getDocs(collection(db, "unified_data"))
+      const allRecords = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      
+      const exceptions: any[] = []
+      
+      // Create exception tracking entries for validation failures
+      allRecords.forEach((record) => {
+        if (!record['CMTA Agreement Status'] || record['CMTA Agreement Status'] !== 'Signed') {
+          exceptions.push({
+            id: `exc_${record.id}_agreement`,
+            TradeID: record.TradeID || record.id,
+            Status: 'Pending',
+            ...record
+          })
+        }
+        if (record['CMTA Agreement Status'] === 'Signed' && 
+            (!record['Reference_Data_Validated'] || record['Reference_Data_Validated'] !== 'Yes')) {
+          exceptions.push({
+            id: `exc_${record.id}_refdata`,
+            TradeID: record.TradeID || record.id,
+            Status: 'Pending',
+            ...record
+          })
+        }
+      })
+      
+      const mapped = exceptions.map((row: any) => {
+        const obj: any = {}
+        exceptionTrackerColumns.forEach((col) => {
+          obj[col] = row[col] ?? ''
+        })
+        obj.id = row.id
+        return obj
+      })
+      setExceptionTrackerRows(mapped)
+    } finally {
+      setExceptionTrackerLoading(false)
+    }
+  }
+
+  const fetchCostData = async () => {
+    setCostLoading(true)
+    try {
+      // Filter for completed trades that can be allocated costs
+      const q = query(
+        collection(db, 'unified_data'), 
+        where('CMTA Agreement Status', '==', 'Signed'),
+        where('SettlementStatus', '==', 'Settled')
+      )
+      const snapshot = await getDocs(q)
+      const data = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
+      
+      const mapped = Array.isArray(data)
+        ? data.map((row: any) => {
+            const obj: any = {}
+            costColumns.forEach((col) => {
+              obj[col] = row[col] ?? ''
+            })
+            obj.id = row.id
+            return obj
+          })
+        : []
+      setCostRows(mapped)
+    } finally {
+      setCostLoading(false)
+    }
+  }
+
   const topMenu = [
     "Data Upload",
     "Home",
@@ -1324,6 +1911,53 @@ export default function CMTAApp() {
     initializeData()
   }, []) // Empty dependency array to run only once
 
+  // Auto-load data when CMTA subtab changes
+  // Initialize visible columns with all columns when component mounts
+  useEffect(() => {
+    if (visibleUnifiedColumns.length === 0) setVisibleUnifiedColumns([...unifiedColumns])
+    if (visibleRefColumns.length === 0) setVisibleRefColumns([...refColumns])
+    if (visibleTradeColumns.length === 0) setVisibleTradeColumns([...tradeColumns])
+    if (visibleEnrichColumns.length === 0) setVisibleEnrichColumns([...enrichColumns])
+    if (visibleConfColumns.length === 0) setVisibleConfColumns([...confColumns])
+    if (visibleClearColumns.length === 0) setVisibleClearColumns([...clearColumns])
+    if (visibleExcColumns.length === 0) setVisibleExcColumns([...excColumns])
+    if (visibleCostColumns.length === 0) setVisibleCostColumns([...costColumns])
+  }, [])
+
+  useEffect(() => {
+    if (activeSidebarSection === "Clearing Member Trading Agreement") {
+      switch (experimentSubTab) {
+        case "Agreement Setup":
+          fetchUnifiedData()
+          if (showAgreementDocTable) {
+            fetchAgreementRows()
+          }
+          break
+        case "Reference Data Mapping":
+          fetchRefData()
+          break
+        case "Trade Capture":
+          fetchTradeDataTable()
+          break
+        case "Trade Enrichment and routing":
+          fetchEnrichData()
+          break
+        case "Confirmations":
+          fetchConfData()
+          break
+        case "Clearing and Settlement":
+          fetchClearData()
+          break
+        case "Exception Management":
+          fetchExcData()
+          break
+        case "Cost Allocation":
+          fetchCostData()
+          break
+      }
+    }
+  }, [experimentSubTab, activeSidebarSection, showAgreementDocTable])
+
   const handleExcelDataLoaded = (data: TradeData[], rawDataInput: any[], detectedType: "equity" | "fx") => {
     console.log(`Received ${data.length} trades with type ${detectedType}`)
     setDataType(detectedType)
@@ -1337,6 +1971,90 @@ export default function CMTAApp() {
   const handleDataTypeChange = (type: "equity" | "fx") => {
     console.log(`Changing data type to ${type}`)
     setDataType(type)
+  }
+
+  // Function to show filtering info modal
+  const showFilteringInfoModal = (subtabName: string) => {
+    setCurrentFilteringInfo(subtabName)
+    setShowFilteringInfo(true)
+  }
+
+  // Column selector component
+  const ColumnSelector = ({ 
+    allColumns, 
+    visibleColumns, 
+    setVisibleColumns, 
+    label 
+  }: { 
+    allColumns: string[]
+    visibleColumns: string[]
+    setVisibleColumns: (cols: string[]) => void
+    label: string
+  }) => {
+    const [isOpen, setIsOpen] = useState(false)
+
+    const toggleColumn = (column: string) => {
+      if (visibleColumns.includes(column)) {
+        setVisibleColumns(visibleColumns.filter(col => col !== column))
+      } else {
+        setVisibleColumns([...visibleColumns, column])
+      }
+    }
+
+    const toggleAll = () => {
+      if (visibleColumns.length === allColumns.length) {
+        setVisibleColumns([])
+      } else {
+        setVisibleColumns([...allColumns])
+      }
+    }
+
+    return (
+      <div className="relative">
+        <button
+          className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none flex items-center gap-2"
+          onClick={() => setIsOpen(!isOpen)}
+          title={`Select columns for ${label}`}
+        >
+          <Settings className="h-5 w-5" />
+          <span className="text-sm">Columns ({visibleColumns.length}/{allColumns.length})</span>
+        </button>
+        
+        {isOpen && (
+          <div className="absolute right-0 top-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 min-w-64 max-h-80 overflow-y-auto">
+            <div className="p-3 border-b border-gray-200 dark:border-gray-700">
+              <button
+                onClick={toggleAll}
+                className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300"
+              >
+                {visibleColumns.length === allColumns.length ? 'Hide All' : 'Show All'}
+              </button>
+            </div>
+            <div className="p-2 space-y-1">
+              {allColumns.map((column) => (
+                <label key={column} className="flex items-center gap-2 p-2 hover:bg-gray-50 dark:hover:bg-gray-700 rounded cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={visibleColumns.includes(column)}
+                    onChange={() => toggleColumn(column)}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700 dark:text-gray-300 truncate">{column}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Backdrop to close dropdown */}
+        {isOpen && (
+          <div 
+            className="fixed inset-0 z-40" 
+            onClick={() => setIsOpen(false)}
+          />
+        )}
+      </div>
+    )
   }
 
   // Helper to update a field in Firestore and reload data
@@ -1396,87 +2114,76 @@ export default function CMTAApp() {
         return <ForwardToSettlements />
       case "Clearing Member Trading Agreement":
         return (
-          <div className="flex-1 flex flex-col items-center justify-start p-8">
-            <div className="w-full max-w-4xl mb-6">
-              <div className="border-b border-gray-200 dark:border-gray-700 pb-2">
-                <div className="flex flex-col gap-2">
-                  {/* First Row */}
-                  <div className="flex items-center gap-2">
-                    {/* Right Arrow Button - always on the left */}
-                    <button
-                      onClick={() => setExperimentTabsExpanded(!experimentTabsExpanded)}
-                      className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none transition-all duration-200"
-                      title={experimentTabsExpanded ? "Hide first 5 tabs" : "Show first 5 tabs"}
-                    >
-                      <ChevronRight className="h-4 w-4" />
-                    </button>
-                    
-                    {/* First 5 tabs - slide in when expanded */}
-                    <div className={`flex gap-2 overflow-hidden transition-all duration-300 ${
-                      experimentTabsExpanded ? "max-w-full opacity-100" : "max-w-0 opacity-0"
-                    }`}>
-                      {experimentSubTabs.slice(0, 5).map((tab) => (
-                        <button
-                          key={tab}
-                          className={`px-4 py-2 rounded-t-md text-sm font-medium transition-all duration-200 focus:outline-none whitespace-nowrap ${
-                            experimentSubTab === tab
-                              ? "bg-black text-white shadow-sm"
-                              : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
-                          }`}
-                          onClick={() => setExperimentSubTab(tab)}
-                        >
-                          {tab}
-                        </button>
-                      ))}
-                    </div>
-                    
-                    {/* Last 3 permanent tabs - show here when collapsed */}
-                    {!experimentTabsExpanded && (
-                      <div className="flex gap-2">
-                        {experimentSubTabs.slice(5).map((tab) => (
-                          <button
-                            key={tab}
-                            className={`px-4 py-2 rounded-t-md text-sm font-medium transition-all duration-200 focus:outline-none whitespace-nowrap ${
-                              experimentSubTab === tab
-                                ? "bg-black text-white shadow-sm"
-                                : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
-                            }`}
-                            onClick={() => setExperimentSubTab(tab)}
-                          >
-                            {tab}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  
-                  {/* Second Row - show permanent tabs when expanded */}
-                  {experimentTabsExpanded && (
-                    <div className="flex gap-2 pl-12 transition-all duration-300">
-                      {experimentSubTabs.slice(5).map((tab) => (
-                        <button
-                          key={tab}
-                          className={`px-4 py-2 rounded-t-md text-sm font-medium transition-all duration-200 focus:outline-none whitespace-nowrap ${
-                            experimentSubTab === tab
-                              ? "bg-black text-white shadow-sm"
-                              : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
-                          }`}
-                          onClick={() => setExperimentSubTab(tab)}
-                        >
-                          {tab}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
+          <div className="flex-1 flex h-full">
+            {/* Vertical Sidebar */}
+            <div className="w-80 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col">
+              <div className="p-4 border-b border-gray-200 dark:border-gray-700">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">CMTA Workflow</h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Clearing Member Trading Agreement</p>
               </div>
+              
+              <nav className="flex-1 p-4">
+                <div className="space-y-2">
+                  {experimentSubTabs.map((tab, index) => (
+                    <button
+                      key={tab}
+                      className={`w-full text-left px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 focus:outline-none flex items-center group ${
+                        experimentSubTab === tab
+                          ? "bg-black text-white shadow-sm"
+                          : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+                      }`}
+                      onClick={() => setExperimentSubTab(tab)}
+                    >
+                      <div className={`w-6 h-6 rounded-full border-2 mr-3 flex items-center justify-center text-xs font-bold ${
+                        experimentSubTab === tab
+                          ? "border-white text-white"
+                          : "border-gray-400 text-gray-400 group-hover:border-gray-600 group-hover:text-gray-600"
+                      }`}>
+                        {index + 1}
+                      </div>
+                      <div className="flex-1">
+                        <div className="font-medium">{tab}</div>
+                        <div className={`text-xs mt-1 ${
+                          experimentSubTab === tab
+                            ? "text-gray-300"
+                            : "text-gray-500 dark:text-gray-400"
+                        }`}>
+                          {index === 0 && "Setup agreements and client data"}
+                          {index === 1 && "Map reference data and accounts"}
+                          {index === 2 && "Capture trade information"}
+                          {index === 3 && "Enrich and route trades"}
+                          {index === 4 && "Manage confirmations"}
+                          {index === 5 && "Process clearing & settlement"}
+                          {index === 6 && "Handle exceptions"}
+                          {index === 7 && "Allocate costs"}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </nav>
             </div>
+
             {/* Content area for subtabs */}
-            <div className="w-full max-w-4xl flex-1 bg-white dark:bg-gray-800 rounded-md shadow p-8">
+            <div className="flex-1 bg-gray-50 dark:bg-gray-900 overflow-auto">
+              <div className="h-full bg-white dark:bg-gray-800 m-4 rounded-lg shadow-sm p-6">
               {/* Agreement Setup subtab content */}
               {experimentSubTab === "Agreement Setup" && (
                 <div>
                   <div className="flex justify-end mb-4 gap-2">
+                    <button
+                      className="p-2 rounded-md bg-blue-100 dark:bg-blue-900 hover:bg-blue-200 dark:hover:bg-blue-800 focus:outline-none text-blue-600 dark:text-blue-400"
+                      title="View filtering logic for this subtab"
+                      onClick={() => showFilteringInfoModal("Agreement Setup")}
+                    >
+                      <Info className="h-5 w-5" />
+                    </button>
+                    <ColumnSelector
+                      allColumns={unifiedColumns}
+                      visibleColumns={visibleUnifiedColumns}
+                      setVisibleColumns={setVisibleUnifiedColumns}
+                      label="Agreement Setup"
+                    />
                     <button
                       className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
                       title="Source data from Firebase"
@@ -1517,7 +2224,7 @@ export default function CMTAApp() {
                     <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
                       <thead>
                         <tr>
-                          {unifiedColumns.map((col) => (
+                          {visibleUnifiedColumns.map((col) => (
                             <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
                           ))}
                         </tr>
@@ -1525,16 +2232,42 @@ export default function CMTAApp() {
                       <tbody>
                         {unifiedLoading ? (
                           <tr>
-                            <td colSpan={unifiedColumns.length} className="text-center py-4">Loading...</td>
+                            <td colSpan={visibleUnifiedColumns.length} className="text-center py-4">Loading...</td>
                           </tr>
                         ) : unifiedRows.length === 0 ? (
                           <tr>
-                            <td colSpan={unifiedColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                            <td colSpan={visibleUnifiedColumns.length} className="text-center py-8">
+                              <div className="text-gray-400">
+                                <p className="mb-4">No data found in Agreement Setup</p>
+                                <div className="space-y-2">
+                                  <p className="text-sm">Possible causes:</p>
+                                  <ul className="text-xs text-left space-y-1 max-w-md mx-auto">
+                                    <li>• Firebase unified_data collection is empty</li>
+                                    <li>• Database connection issue</li>
+                                    <li>• No trade data has been uploaded yet</li>
+                                  </ul>
+                                  <div className="flex gap-2 justify-center mt-4">
+                                    <button
+                                      onClick={fetchUnifiedData}
+                                      className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm"
+                                    >
+                                      🔄 Refresh Data
+                                    </button>
+                                    <button
+                                      onClick={createSampleAgreementData}
+                                      className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 text-sm"
+                                    >
+                                      ✨ Create Sample Data
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
                           </tr>
                         ) : (
                           unifiedRows.map((row, idx) => (
                             <tr key={row.id || idx} className={unifiedUpdatingId === row.id ? "opacity-50" : ""}>
-                              {unifiedColumns.map((col) => (
+                              {visibleUnifiedColumns.map((col) => (
                                 <td key={col} className="min-w-[240px] px-4 py-2 border-b">
                                   {col === 'id' ? (
                                     <input
@@ -1741,6 +2474,19 @@ export default function CMTAApp() {
 
                   <div className="flex justify-end mb-4 gap-2">
                     <button
+                      className="p-2 rounded-md bg-blue-100 dark:bg-blue-900 hover:bg-blue-200 dark:hover:bg-blue-800 focus:outline-none text-blue-600 dark:text-blue-400"
+                      title="View filtering logic for this subtab"
+                      onClick={() => showFilteringInfoModal("Reference Data Mapping")}
+                    >
+                      <Info className="h-5 w-5" />
+                    </button>
+                    <ColumnSelector
+                      allColumns={refColumns}
+                      visibleColumns={visibleRefColumns}
+                      setVisibleColumns={setVisibleRefColumns}
+                      label="Reference Data Mapping"
+                    />
+                    <button
                       className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
                       title="Source data from Firebase"
                       onClick={fetchRefData}
@@ -1773,7 +2519,7 @@ export default function CMTAApp() {
                     <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
                       <thead>
                         <tr>
-                          {refColumns.map((col) => (
+                          {visibleRefColumns.map((col) => (
                             <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
                           ))}
                         </tr>
@@ -1781,16 +2527,16 @@ export default function CMTAApp() {
                       <tbody>
                         {refLoading ? (
                           <tr>
-                            <td colSpan={refColumns.length} className="text-center py-4">Loading...</td>
+                            <td colSpan={visibleRefColumns.length} className="text-center py-4">Loading...</td>
                           </tr>
                         ) : refRows.length === 0 ? (
                           <tr>
-                            <td colSpan={refColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                            <td colSpan={visibleRefColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
                           </tr>
                         ) : (
                           refRows.map((row, idx) => (
                             <tr key={row.id || idx} className={`${refUpdatingId === row.id ? "opacity-50" : ""} ${row['Reference_Data_Validated'] === 'Yes' ? 'bg-green-50 dark:bg-green-900/10 border-l-4 border-l-green-500' : row['Reference_Data_Validated'] === 'No' ? 'bg-red-50 dark:bg-red-900/10 border-l-4 border-l-red-500' : 'bg-yellow-50 dark:bg-yellow-900/10 border-l-4 border-l-yellow-500'}`}>
-                              {refColumns.map((col) => (
+                              {visibleRefColumns.map((col) => (
                                 <td key={col} className="min-w-[240px] px-4 py-2 border-b">
                                   {col === 'id' ? (
                                     <input
@@ -1839,6 +2585,19 @@ export default function CMTAApp() {
 
                   <div className="flex justify-end mb-4 gap-2">
                     <button
+                      className="p-2 rounded-md bg-blue-100 dark:bg-blue-900 hover:bg-blue-200 dark:hover:bg-blue-800 focus:outline-none text-blue-600 dark:text-blue-400"
+                      title="View filtering logic for this subtab"
+                      onClick={() => showFilteringInfoModal("Trade Capture")}
+                    >
+                      <Info className="h-5 w-5" />
+                    </button>
+                    <ColumnSelector
+                      allColumns={tradeColumns}
+                      visibleColumns={visibleTradeColumns}
+                      setVisibleColumns={setVisibleTradeColumns}
+                      label="Trade Capture"
+                    />
+                    <button
                       className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
                       title="Source data from Firebase"
                       onClick={fetchTradeDataTable}
@@ -1871,7 +2630,7 @@ export default function CMTAApp() {
                     <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
                       <thead>
                         <tr>
-                          {tradeColumns.map((col) => (
+                          {visibleTradeColumns.map((col) => (
                             <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
                           ))}
                         </tr>
@@ -1879,16 +2638,16 @@ export default function CMTAApp() {
                       <tbody>
                         {tradeLoading ? (
                           <tr>
-                            <td colSpan={tradeColumns.length} className="text-center py-4">Loading...</td>
+                            <td colSpan={visibleTradeColumns.length} className="text-center py-4">Loading...</td>
                           </tr>
                         ) : tradeRows.length === 0 ? (
                           <tr>
-                            <td colSpan={tradeColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                            <td colSpan={visibleTradeColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
                           </tr>
                         ) : (
                           tradeRows.map((row, idx) => (
                             <tr key={row.id || idx} className={`${tradeUpdatingId === row.id ? "opacity-50" : ""} ${row['TradeStatus'] === 'Booked' ? 'bg-green-50 dark:bg-green-900/10 border-l-4 border-l-green-500' : row['TradeStatus'] === 'Pending' ? 'bg-yellow-50 dark:bg-yellow-900/10 border-l-4 border-l-yellow-500' : 'bg-gray-50 dark:bg-gray-900/10 border-l-4 border-l-gray-500'}`}>
-                              {tradeColumns.map((col) => (
+                              {visibleTradeColumns.map((col) => (
                                 <td key={col} className="min-w-[240px] px-4 py-2 border-b">
                                   {col === 'id' ? (
                                     <input
@@ -1937,6 +2696,19 @@ export default function CMTAApp() {
 
                   <div className="flex justify-end mb-4 gap-2">
                     <button
+                      className="p-2 rounded-md bg-blue-100 dark:bg-blue-900 hover:bg-blue-200 dark:hover:bg-blue-800 focus:outline-none text-blue-600 dark:text-blue-400"
+                      title="View filtering logic for this subtab"
+                      onClick={() => showFilteringInfoModal("Trade Enrichment and routing")}
+                    >
+                      <Info className="h-5 w-5" />
+                    </button>
+                    <ColumnSelector
+                      allColumns={enrichColumns}
+                      visibleColumns={visibleEnrichColumns}
+                      setVisibleColumns={setVisibleEnrichColumns}
+                      label="Trade Enrichment and routing"
+                    />
+                    <button
                       className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
                       title="Source data from Firebase"
                       onClick={fetchEnrichData}
@@ -1969,7 +2741,7 @@ export default function CMTAApp() {
                     <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
                       <thead>
                         <tr>
-                          {enrichColumns.map((col) => (
+                          {visibleEnrichColumns.map((col) => (
                             <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
                           ))}
                         </tr>
@@ -1977,16 +2749,16 @@ export default function CMTAApp() {
                       <tbody>
                         {enrichLoading ? (
                           <tr>
-                            <td colSpan={enrichColumns.length} className="text-center py-4">Loading...</td>
+                            <td colSpan={visibleEnrichColumns.length} className="text-center py-4">Loading...</td>
                           </tr>
                         ) : enrichRows.length === 0 ? (
                           <tr>
-                            <td colSpan={enrichColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                            <td colSpan={visibleEnrichColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
                           </tr>
                         ) : (
                           enrichRows.map((row, idx) => (
-                            <tr key={row.id || idx} className={`${enrichUpdatingId === row.id ? "opacity-50" : ""} ${row['Instrument_Status'] === 'Active' ? 'bg-green-50 dark:bg-green-900/10 border-l-4 border-l-green-500' : row['Instrument_Status'] === 'Inactive' ? 'bg-red-50 dark:bg-red-900/10 border-l-4 border-l-red-500' : 'bg-yellow-50 dark:bg-yellow-900/10 border-l-4 border-l-yellow-500'}`}>
-                              {enrichColumns.map((col) => (
+                            <tr key={row.id || idx} className={`${enrichUpdatingId === row.id ? "opacity-50" : ""}`}>
+                              {visibleEnrichColumns.map((col) => (
                                 <td key={col} className="min-w-[240px] px-4 py-2 border-b">
                                   {col === 'id' ? (
                                     <input
@@ -2034,6 +2806,19 @@ export default function CMTAApp() {
                 <div>
                   <div className="flex justify-end mb-4 gap-2">
                     <button
+                      className="p-2 rounded-md bg-blue-100 dark:bg-blue-900 hover:bg-blue-200 dark:hover:bg-blue-800 focus:outline-none text-blue-600 dark:text-blue-400"
+                      title="View filtering logic for this subtab"
+                      onClick={() => showFilteringInfoModal("Confirmations")}
+                    >
+                      <Info className="h-5 w-5" />
+                    </button>
+                    <ColumnSelector
+                      allColumns={confColumns}
+                      visibleColumns={visibleConfColumns}
+                      setVisibleColumns={setVisibleConfColumns}
+                      label="Confirmations"
+                    />
+                    <button
                       className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
                       title="Source data from Firebase"
                       onClick={fetchConfData}
@@ -2066,7 +2851,7 @@ export default function CMTAApp() {
                     <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
                       <thead>
                         <tr>
-                          {confColumns.map((col) => (
+                          {visibleConfColumns.map((col) => (
                             <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
                           ))}
                         </tr>
@@ -2074,16 +2859,16 @@ export default function CMTAApp() {
                       <tbody>
                         {confLoading ? (
                           <tr>
-                            <td colSpan={confColumns.length} className="text-center py-4">Loading...</td>
+                            <td colSpan={visibleConfColumns.length} className="text-center py-4">Loading...</td>
                           </tr>
                         ) : confRows.length === 0 ? (
                           <tr>
-                            <td colSpan={confColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                            <td colSpan={visibleConfColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
                           </tr>
                         ) : (
                           confRows.map((row, idx) => (
                             <tr key={row.id || idx} className={`${confUpdatingId === row.id ? "opacity-50" : ""} ${row['ConfirmationStatus'] === 'Confirmed' ? 'bg-green-50 dark:bg-green-900/10 border-l-4 border-l-green-500' : row['ConfirmationStatus'] === 'Pending' ? 'bg-yellow-50 dark:bg-yellow-900/10 border-l-4 border-l-yellow-500' : 'bg-red-50 dark:bg-red-900/10 border-l-4 border-l-red-500'}`}>
-                              {confColumns.map((col) => (
+                              {visibleConfColumns.map((col) => (
                                 <td key={col} className="min-w-[240px] px-4 py-2 border-b">
                                   {col === 'id' ? (
                                     <input
@@ -2131,6 +2916,19 @@ export default function CMTAApp() {
                 <div>
                   <div className="flex justify-end mb-4 gap-2">
                     <button
+                      className="p-2 rounded-md bg-blue-100 dark:bg-blue-900 hover:bg-blue-200 dark:hover:bg-blue-800 focus:outline-none text-blue-600 dark:text-blue-400"
+                      title="View filtering logic for this subtab"
+                      onClick={() => showFilteringInfoModal("Clearing and Settlement")}
+                    >
+                      <Info className="h-5 w-5" />
+                    </button>
+                    <ColumnSelector
+                      allColumns={clearColumns}
+                      visibleColumns={visibleClearColumns}
+                      setVisibleColumns={setVisibleClearColumns}
+                      label="Clearing and Settlement"
+                    />
+                    <button
                       className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
                       title="Source data from Firebase"
                       onClick={fetchClearData}
@@ -2163,7 +2961,7 @@ export default function CMTAApp() {
                     <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
                       <thead>
                         <tr>
-                          {clearColumns.map((col) => (
+                          {visibleClearColumns.map((col) => (
                             <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
                           ))}
                         </tr>
@@ -2171,16 +2969,16 @@ export default function CMTAApp() {
                       <tbody>
                         {clearLoading ? (
                           <tr>
-                            <td colSpan={clearColumns.length} className="text-center py-4">Loading...</td>
+                            <td colSpan={visibleClearColumns.length} className="text-center py-4">Loading...</td>
                           </tr>
                         ) : clearRows.length === 0 ? (
                           <tr>
-                            <td colSpan={clearColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                            <td colSpan={visibleClearColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
                           </tr>
                         ) : (
                           clearRows.map((row, idx) => (
                             <tr key={row.id || idx} className={clearUpdatingId === row.id ? "opacity-50" : ""}>
-                              {clearColumns.map((col) => (
+                              {visibleClearColumns.map((col) => (
                                 <td key={col} className="min-w-[240px] px-4 py-2 border-b">
                                   {col === 'id' ? (
                                     <input
@@ -2228,6 +3026,19 @@ export default function CMTAApp() {
                 <div>
                   <div className="flex justify-end mb-4 gap-2">
                     <button
+                      className="p-2 rounded-md bg-blue-100 dark:bg-blue-900 hover:bg-blue-200 dark:hover:bg-blue-800 focus:outline-none text-blue-600 dark:text-blue-400"
+                      title="View filtering logic for this subtab"
+                      onClick={() => showFilteringInfoModal("Exception Management")}
+                    >
+                      <Info className="h-5 w-5" />
+                    </button>
+                    <ColumnSelector
+                      allColumns={excColumns}
+                      visibleColumns={visibleExcColumns}
+                      setVisibleColumns={setVisibleExcColumns}
+                      label="Exception Management"
+                    />
+                    <button
                       className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
                       title="Source data from Firebase"
                       onClick={fetchExcData}
@@ -2260,7 +3071,7 @@ export default function CMTAApp() {
                     <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
                       <thead>
                         <tr>
-                          {excColumns.map((col) => (
+                          {visibleExcColumns.map((col) => (
                             <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
                           ))}
                         </tr>
@@ -2268,11 +3079,11 @@ export default function CMTAApp() {
                       <tbody>
                         {excLoading ? (
                           <tr>
-                            <td colSpan={excColumns.length} className="text-center py-4">Loading...</td>
+                            <td colSpan={visibleExcColumns.length} className="text-center py-4">Loading...</td>
                           </tr>
                         ) : excRows.length === 0 ? (
                           <tr>
-                            <td colSpan={excColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                            <td colSpan={visibleExcColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
                           </tr>
                         ) : (
                           excRows.map((row, idx) => (
@@ -2296,7 +3107,7 @@ export default function CMTAApp() {
                                 }
                               })()
                             }`}>
-                              {excColumns.map((col) => (
+                              {visibleExcColumns.map((col) => (
                                 <td key={col} className="min-w-[240px] px-4 py-2 border-b">
                                   {col === 'id' ? (
                                     <input
@@ -2497,6 +3308,19 @@ export default function CMTAApp() {
                 <div>
                   <div className="flex justify-end mb-4 gap-2">
                     <button
+                      className="p-2 rounded-md bg-blue-100 dark:bg-blue-900 hover:bg-blue-200 dark:hover:bg-blue-800 focus:outline-none text-blue-600 dark:text-blue-400"
+                      title="View filtering logic for this subtab"
+                      onClick={() => showFilteringInfoModal("Cost Allocation")}
+                    >
+                      <Info className="h-5 w-5" />
+                    </button>
+                    <ColumnSelector
+                      allColumns={costColumns}
+                      visibleColumns={visibleCostColumns}
+                      setVisibleColumns={setVisibleCostColumns}
+                      label="Cost Allocation"
+                    />
+                    <button
                       className="p-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none"
                       title="Source data from Firebase"
                       onClick={fetchCostData}
@@ -2529,7 +3353,7 @@ export default function CMTAApp() {
                     <table className="min-w-full border border-gray-200 dark:border-gray-700 rounded-md">
                       <thead>
                         <tr>
-                          {costColumns.map((col) => (
+                          {visibleCostColumns.map((col) => (
                             <th key={col} className="min-w-[240px] px-4 py-2 border-b">{col}</th>
                           ))}
                         </tr>
@@ -2537,16 +3361,16 @@ export default function CMTAApp() {
                       <tbody>
                         {costLoading ? (
                           <tr>
-                            <td colSpan={costColumns.length} className="text-center py-4">Loading...</td>
+                            <td colSpan={visibleCostColumns.length} className="text-center py-4">Loading...</td>
                           </tr>
                         ) : costRows.length === 0 ? (
                           <tr>
-                            <td colSpan={costColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
+                            <td colSpan={visibleCostColumns.length} className="text-center py-4 text-gray-400">No data loaded</td>
                           </tr>
                         ) : (
                           costRows.map((row, idx) => (
                             <tr key={row.id || idx} className={costUpdatingId === row.id ? "opacity-50" : ""}>
-                              {costColumns.map((col) => (
+                              {visibleCostColumns.map((col) => (
                                 <td key={col} className="min-w-[240px] px-4 py-2 border-b">
                                   {col === 'id' ? (
                                     <input
@@ -2867,6 +3691,7 @@ export default function CMTAApp() {
                   </div>
                 </div>
               )}
+              </div>
             </div>
           </div>
         )
@@ -2884,376 +3709,9 @@ export default function CMTAApp() {
     }
   }
 
-  // Add state for Clearing and Settlement tab (place near other CMTA tab states)
-  const [clearRows, setClearRows] = useState<any[]>([])
-  const [clearLoading, setClearLoading] = useState(false)
-  const [clearEditedRows, setClearEditedRows] = useState<{ [id: string]: any }>({})
-  const [clearSaveLoading, setClearSaveLoading] = useState(false)
-  const [clearUpdatingId, setClearUpdatingId] = useState<string | null>(null)
-
-  // Add fetchClearData function (place near other fetch functions)
-  const fetchClearData = async () => {
-    setClearLoading(true)
-    try {
-              // Simple business logic: Only trades with ConfirmationStatus = 'Confirmed' 
-        // (set in Confirmations subtab) should proceed to Clearing and Settlement
-        const q = query(
-          collection(db, 'unified_data'), 
-          where('ConfirmationStatus', '==', 'Confirmed')
-        )
-      const snapshot = await getDocs(q)
-      const rows = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
-      setClearRows(rows)
-    } catch (err) {
-      setClearRows([])
-    }
-    setClearLoading(false)
-  }
-
-  // Define columns for Clearing and Settlement tab (user-specified order, id last)
-  const clearColumns = [
-    "TradeID",
-    "SettlementDate",
-    "SettlementStatus",
-    "SettlementCurrency",
-    "SettlementCost",
-    "SettlementInstructions",
-    "SettlementMethod",
-    "Settlement_Method_Equity",
-    "Settlement_Method_Forex",
-    "Settlement_Cycle",
-    "MaturityDate",
-    "ValueDate",
-    "NettingEligibility",
-    "CustodyCurrency",
-    "CustodyFee",
-    "id", // Firestore document ID as last column
-  ]
-
-  // Exception Management Table State
-  const [excRows, setExcRows] = useState<any[]>([])
-  const [excLoading, setExcLoading] = useState(false)
-  const [excEditedRows, setExcEditedRows] = useState<{ [id: string]: any }>({})
-  const [excSaveLoading, setExcSaveLoading] = useState(false)
-  const [excUpdatingId, setExcUpdatingId] = useState<string | null>(null)
-
-  // Exception Tracking Table State (Second Table)
-  const [exceptionTrackerRows, setExceptionTrackerRows] = useState<any[]>([])
-  const [exceptionTrackerLoading, setExceptionTrackerLoading] = useState(false)
-  const [exceptionTrackerEditedRows, setExceptionTrackerEditedRows] = useState<{ [id: string]: any }>({})
-  const [exceptionTrackerSaveLoading, setExceptionTrackerSaveLoading] = useState(false)
-
-  // Exception Management columns (user-specified order, id last)
-  const excColumns = [
-    "TradeID",
-    "ExceptionFlag",
-    "Exception Type",
-    "Exception Description",
-    "Exception Reason",
-    "Exception Resolution",
-    "Reporting Resolution",
-    "disputeReason",
-    "reason",
-    "id", // Firestore document ID as last column
-  ]
-
-  // Exception Tracking Table columns (Second Table)
-  const exceptionTrackerColumns = [
-    "Source Tab",
-    "TradeID", 
-    "Error Category",
-    "Owner Team",
-    "Resolution Status",
-    "Timestamped Comments",
-    "id", // Firestore document ID as last column
-  ]
-
-  // Fetch Exception Tracking data (all failed validations)
-  const fetchExceptionTrackerData = async () => {
-    setExceptionTrackerLoading(true)
-    try {
-      const snapshot = await getDocs(collection(db, "unified_data"))
-      const allRecords = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
-      
-      const exceptions: any[] = []
-      
-      // Check each record for validation failures and create exception entries
-      allRecords.forEach((record) => {
-        // Check Agreement Setup validation
-        if (!record['CMTA Agreement Status'] || record['CMTA Agreement Status'] !== 'Signed') {
-          exceptions.push({
-            id: `exc_${record.id}_agreement`,
-            "Source Tab": "Agreement Setup",
-            "TradeID": record.TradeID || record.id,
-            "Error Category": "Data Error",
-            "Owner Team": "Legal Team",
-            "Resolution Status": "Pending",
-            "Timestamped Comments": `${new Date().toISOString()}: Agreement not signed - Status: ${record['CMTA Agreement Status'] || 'Missing'}`
-          })
-        }
-        
-        // Check Reference Data validation (for signed agreements)
-        if (record['CMTA Agreement Status'] === 'Signed' && 
-            (!record['Reference_Data_Validated'] || record['Reference_Data_Validated'] !== 'Yes')) {
-          exceptions.push({
-            id: `exc_${record.id}_refdata`,
-            "Source Tab": "Reference Data Mapping",
-            "TradeID": record.TradeID || record.id,
-            "Error Category": "Data Error",
-            "Owner Team": "Operations Team",
-            "Resolution Status": "Pending",
-            "Timestamped Comments": `${new Date().toISOString()}: Reference data validation failed - Status: ${record['Reference_Data_Validated'] || 'Missing'}`
-          })
-        }
-        
-        // Check Trade Capture validation (for signed + validated)
-        if (record['CMTA Agreement Status'] === 'Signed' && 
-            record['Reference_Data_Validated'] === 'Yes' &&
-            (!record['TradeStatus'] || record['TradeStatus'] !== 'Booked')) {
-          exceptions.push({
-            id: `exc_${record.id}_trade`,
-            "Source Tab": "Trade Capture",
-            "TradeID": record.TradeID || record.id,
-            "Error Category": "Instruction Mismatch",
-            "Owner Team": "Trading Team",
-            "Resolution Status": "Pending",
-            "Timestamped Comments": `${new Date().toISOString()}: Trade booking failed - Status: ${record['TradeStatus'] || 'Missing'}`
-          })
-        }
-        
-        // Check Trade Enrichment validation
-        if (record['CMTA Agreement Status'] === 'Signed' && 
-            record['Reference_Data_Validated'] === 'Yes' &&
-            record['TradeStatus'] === 'Booked' &&
-            (!record['Instrument_Status'] || record['Instrument_Status'] !== 'Active')) {
-          exceptions.push({
-            id: `exc_${record.id}_enrichment`,
-            "Source Tab": "Trade Enrichment and Routing",
-            "TradeID": record.TradeID || record.id,
-            "Error Category": "System Failure",
-            "Owner Team": "Technology Team",
-            "Resolution Status": "Pending",
-            "Timestamped Comments": `${new Date().toISOString()}: Instrument status check failed - Status: ${record['Instrument_Status'] || 'Missing'}`
-          })
-        }
-        
-        // Check Confirmations validation
-        if (record['CMTA Agreement Status'] === 'Signed' && 
-            record['Reference_Data_Validated'] === 'Yes' &&
-            record['TradeStatus'] === 'Booked' &&
-            record['Instrument_Status'] === 'Active' &&
-            (!record['ConfirmationStatus'] || record['ConfirmationStatus'] !== 'Confirmed')) {
-          exceptions.push({
-            id: `exc_${record.id}_confirmation`,
-            "Source Tab": "Confirmations",
-            "TradeID": record.TradeID || record.id,
-            "Error Category": "Delay",
-            "Owner Team": "Operations Team", 
-            "Resolution Status": "Pending",
-            "Timestamped Comments": `${new Date().toISOString()}: Confirmation pending - Status: ${record['ConfirmationStatus'] || 'Missing'}`
-          })
-        }
-      })
-      
-      setExceptionTrackerRows(exceptions)
-    } catch (err) {
-      setExceptionTrackerRows([])
-    }
-    setExceptionTrackerLoading(false)
-  }
-
-  // Fetch Exception Management data
-  const fetchExcData = async () => {
-    setExcLoading(true)
-    try {
-      const snapshot = await getDocs(collection(db, "unified_data"))
-      const rows = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
-      setExcRows(rows)
-    } catch (err) {
-      setExcRows([])
-    }
-    setExcLoading(false)
-  }
-
-  // Cost Allocation Table State
-  const [costRows, setCostRows] = useState<any[]>([])
-  const [costLoading, setCostLoading] = useState(false)
-  const [costEditedRows, setCostEditedRows] = useState<{ [id: string]: any }>({})
-  const [costSaveLoading, setCostSaveLoading] = useState(false)
-  const [costUpdatingId, setCostUpdatingId] = useState<string | null>(null)
-
-  // Second Cost Allocation Table State  
-  const [costDetailsRows, setCostDetailsRows] = useState<any[]>([])
-  const [costDetailsLoading, setCostDetailsLoading] = useState(false)
-  const [costDetailsEditedRows, setCostDetailsEditedRows] = useState<{ [id: string]: any }>({})
-  const [costDetailsSaveLoading, setCostDetailsSaveLoading] = useState(false)
-
-  // Cost Allocation columns (user-specified order, id last)
-  const costColumns = [
-    "TradeID",
-    "CostAllocationStatus", 
-    "CostBookedDate",
-    "CostCenter",
-    "DealtCurrency",
-    "reportingCurrency",
-    "FXRate",
-    "id", // Firestore document ID as last column
-  ]
-
-  // Second Cost Allocation Table columns
-  const costDetailsColumns = [
-    "TradeID",
-    "NotionalAmount",
-    "CommissionAmount",
-    "CommissionCurrency", 
-    "commission rate agreed",
-    "BrokerageFee",
-    "BrokerageCurrency",
-    "FXGainLoss",
-    "ExpenseApprovalStatus",
-    "threshold",
-    "threshold status",
-    "CostAllocationStatus",
-    "CostBookedDate",
-    "id", // Firestore document ID as last column
-  ]
-
-  // Fetch Cost Allocation data
-  const fetchCostData = async () => {
-    setCostLoading(true)
-    try {
-      const snapshot = await getDocs(collection(db, "unified_data"))
-      const allRows = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
-      
-      // Cost Allocation business logic based on Exception Management status:
-      // 1. If ExceptionFlag = 'No' → Forward directly to Cost Allocation
-      // 2. If ExceptionFlag = 'Yes' → Only forward if BOTH 'Exception Resolution' AND 'Reporting Resolution' are present
-      const filteredRows = allRows.filter((row: any) => {
-        const exceptionFlag = row['ExceptionFlag']
-        
-        if (exceptionFlag === 'No') {
-          // Case 1: No exceptions - forward directly
-          return true
-        } else if (exceptionFlag === 'Yes') {
-          // Case 2: Exceptions exist - only forward if both resolutions are present
-          const exceptionResolution = row['Exception Resolution']
-          const reportingResolution = row['Reporting Resolution']
-          return (
-            exceptionResolution && exceptionResolution.trim() !== '' &&
-            reportingResolution && reportingResolution.trim() !== ''
-          )
-        }
-        
-        // If ExceptionFlag is neither 'Yes' nor 'No', don't forward
-        return false
-      })
-      
-      setCostRows(filteredRows)
-    } catch (err) {
-      setCostRows([])
-    }
-    setCostLoading(false)
-  }
-
-  // Fetch Cost Details data (second table)
-  const fetchCostDetailsData = async () => {
-    setCostDetailsLoading(true)
-    try {
-      const snapshot = await getDocs(collection(db, "unified_data"))
-      const allRows = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }))
-      
-      // Apply same Cost Allocation business logic as first table:
-      // 1. If ExceptionFlag = 'No' → Forward directly to Cost Allocation
-      // 2. If ExceptionFlag = 'Yes' → Only forward if BOTH 'Exception Resolution' AND 'Reporting Resolution' are present
-      const filteredRows = allRows.filter((row: any) => {
-        const exceptionFlag = row['ExceptionFlag']
-        
-        if (exceptionFlag === 'No') {
-          // Case 1: No exceptions - forward directly
-          return true
-        } else if (exceptionFlag === 'Yes') {
-          // Case 2: Exceptions exist - only forward if both resolutions are present
-          const exceptionResolution = row['Exception Resolution']
-          const reportingResolution = row['Reporting Resolution']
-          return (
-            exceptionResolution && exceptionResolution.trim() !== '' &&
-            reportingResolution && reportingResolution.trim() !== ''
-          )
-        }
-        
-        // If ExceptionFlag is neither 'Yes' nor 'No', don't forward
-        return false
-      })
-      
-      setCostDetailsRows(filteredRows)
-    } catch (err) {
-      setCostDetailsRows([])
-    }
-    setCostDetailsLoading(false)
-  }
-
-  // Agreement Document Table State
-  const [agreementRows, setAgreementRows] = useState<any[]>([])
-  const [agreementLoading, setAgreementLoading] = useState(false)
-  const [agreementEditedRows, setAgreementEditedRows] = useState<{ [id: string]: any }>({})
-  const [agreementStatusSaveLoading, setAgreementStatusSaveLoading] = useState(false)
-  const [showAgreementDocTable, setShowAgreementDocTable] = useState(false)
-
-  // Agreement Document columns
-  const agreementColumns = [
-    "Broker",
-    "client",
-    "CMTA Agreement Status",
-    "version",
-    "Generated on",
-    "Last modified",
-    "View agreement",
-    "commission rate agreed",
-    "signed agreement",
-    "id",
-  ]
-
-  // Fetch Agreement Document data (for now, just reuse unified_data)
-  const fetchAgreementRows = async () => {
-    setAgreementLoading(true)
-    try {
-      const snapshot = await getDocs(collection(db, "unified_data"))
-      const rows = snapshot.docs.map((doc: any) => ({
-        id: doc.id,
-        Broker: doc.data().Broker || doc.data().broker || "Goldman Sachs",
-        client: doc.data().client || doc.data().Client || "Client Corp",
-        "CMTA Agreement Status": doc.data()["CMTA Agreement Status"] || "Draft",
-        version: "v1",
-        "Generated on": new Date().toLocaleDateString(),
-        "Last modified": new Date().toLocaleDateString(),
-        "View agreement": "",
-        "commission rate agreed": doc.data()["commission rate agreed"] || `${(Math.random() * (0.5 - 0.1) + 0.1).toFixed(3)}%`,
-        "signed agreement": "",
-        // Additional fields for PDF generation
-        BrokerageCurrency: doc.data().BrokerageCurrency || "USD",
-        BrokerageFee: doc.data().BrokerageFee || "0.25%",
-        EffectiveDate_Equity: doc.data().EffectiveDate_Equity || new Date().toLocaleDateString(),
-        EffectiveDate_Forex: doc.data().EffectiveDate_Forex || new Date().toLocaleDateString(),
-        LEI: doc.data().LEI || "5493000SCC2CB6S5CT72",
-        clientId: doc.data().clientId || doc.data().Client || "CLIENT001"
-      }))
-      setAgreementRows(rows)
-    } catch (err) {
-      setAgreementRows([])
-    }
-    setAgreementLoading(false)
-  }
-
-  // Auto-load Agreement Document data when Agreement Setup subtab is selected
-  useEffect(() => {
-    if (experimentSubTab === "Agreement Setup") {
-      fetchAgreementRows()
-    }
-  }, [experimentSubTab])
-
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
-      <header className="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700">
+      <header className="bg-white dark:bg-gray-800 shadow-sm border-b-2 border-white">
         <div className="container mx-auto px-4">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center">
@@ -3406,6 +3864,58 @@ export default function CMTAApp() {
           )}
         </main>
       </div>
+
+      {/* Filtering Info Modal */}
+      {showFilteringInfo && currentFilteringInfo && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+            <div className="flex justify-between items-start mb-4">
+              <h2 className="text-xl font-bold text-gray-900 dark:text-white">
+                {filteringExplanations[currentFilteringInfo]?.title || 'Filtering Logic'}
+              </h2>
+              <button
+                onClick={() => setShowFilteringInfo(false)}
+                className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+              >
+                <X className="h-5 w-5 text-gray-500" />
+              </button>
+            </div>
+            
+            {filteringExplanations[currentFilteringInfo] && (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+                    Filtering Logic:
+                  </h3>
+                  <div className="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg">
+                    <ul className="space-y-1 text-sm text-gray-700 dark:text-gray-300">
+                      {filteringExplanations[currentFilteringInfo].logic.map((item, index) => (
+                        <li key={index} className="font-mono">{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+                
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+                    Purpose:
+                  </h3>
+                  <p className="text-gray-700 dark:text-gray-300 leading-relaxed">
+                    {filteringExplanations[currentFilteringInfo].purpose}
+                  </p>
+                </div>
+
+                <div className="pt-4 border-t border-gray-200 dark:border-gray-600">
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    This information helps you understand which records are shown and why certain trades may or may not appear in this subtab.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Toast/alert for feedback */}
       {toastMsg && (
         <div className={`fixed top-4 right-4 z-50 px-4 py-2 rounded shadow-lg text-white ${toastType === 'success' ? 'bg-green-600' : 'bg-red-600'}`}

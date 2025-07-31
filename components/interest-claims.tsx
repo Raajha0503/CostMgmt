@@ -4815,7 +4815,7 @@ Generated on: ${new Date().toLocaleString()}`
   }
 
   return (
-    <div className="flex h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="flex h-screen bg-gray-50 dark:bg-gray-900 border-l-2 border-white">
       {/* Collapsible Sidebar */}
       <div
         className={`${
@@ -4823,7 +4823,7 @@ Generated on: ${new Date().toLocaleString()}`
       } transition-all duration-300 ease-in-out bg-sidebar shadow-lg flex flex-col`}
       >
         {/* Sidebar Header */}
-        <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+        <div className="p-4 border-b-2 border-white flex items-center justify-between">
           {!sidebarCollapsed && <h1 className="text-xl font-bold text-sidebar-foreground">Interest Claims</h1>}
           <Button
             variant="ghost"
