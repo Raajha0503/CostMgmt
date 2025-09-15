@@ -11,6 +11,7 @@ import {
   BarChart3,
   Building2,
   TrendingUp,
+  Info,
 } from "lucide-react"
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from 'recharts'
 import { analyzeExcelData, mapExcelToTradeData, type ExcelAnalysis } from "@/lib/excel-processor"
@@ -141,6 +142,7 @@ function BrokerageDataUpload({
   const [error, setError] = useState<string | null>(null)
   const [uploadingAsIs, setUploadingAsIs] = useState(false)
   const [uploadAsIsSuccess, setUploadAsIsSuccess] = useState(false)
+  const [showInfoMessage, setShowInfoMessage] = useState(false)
   const { trades: firebaseTrades, loadTrades, loading: firebaseLoading, createTrade } = useFirebase();
   const dataTypeRef = useRef(dataType);
   React.useEffect(() => { dataTypeRef.current = dataType }, [dataType]);
@@ -489,14 +491,38 @@ function BrokerageDataUpload({
       <div className="p-8 bg-white dark:bg-gray-800 rounded-lg shadow-md mt-8">
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Upload or Source Brokerage Data</h2>
-          <button
-            onClick={handleSourceFromFirebase}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium"
-            disabled={firebaseLoading}
-          >
-            {firebaseLoading ? "Loading..." : "Source data from Firebase"}
-          </button>
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => setShowInfoMessage(!showInfoMessage)}
+              className="p-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700"
+              title="Information"
+            >
+              <Info className="h-4 w-4" />
+            </button>
+            <button
+              onClick={handleSourceFromFirebase}
+              className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md text-sm font-medium"
+              disabled={firebaseLoading}
+            >
+              {firebaseLoading ? "Loading..." : "Next"}
+            </button>
+          </div>
         </div>
+        
+        {/* Info Message */}
+        {showInfoMessage && (
+          <div className="mb-6 bg-blue-50 dark:bg-blue-900 border border-blue-200 dark:border-blue-700 rounded-xl p-6">
+            <div className="flex items-start">
+              <Info className="h-5 w-5 text-blue-500 mr-3 mt-0.5" />
+              <div>
+                <p className="text-blue-800 dark:text-blue-200 font-medium">Data Loading Information</p>
+                <p className="text-blue-700 dark:text-blue-300 mt-1">
+                  Equity trades are not loaded, FX trades are available. Please click on "FX Trades" first, then click the "Next" button to load data.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="max-w-6xl mx-auto">
           {error && (
             <div className="bg-red-50 dark:bg-red-900 border border-red-200 dark:border-red-700 rounded-xl p-6 mb-8">
@@ -680,7 +706,7 @@ function BrokerageDataUpload({
               className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md text-sm font-medium"
               disabled={uploadingAsIs || !rawData.length}
             >
-              {uploadingAsIs ? "Uploading..." : "Upload as-is to Firebase"}
+              {uploadingAsIs ? "Uploading..." : "Upload"}
             </button>
             {uploadAsIsSuccess && <span className="text-green-600 text-sm ml-2">Upload successful!</span>}
             <button
