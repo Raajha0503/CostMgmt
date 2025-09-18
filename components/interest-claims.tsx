@@ -20,6 +20,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Menu,
+  Info,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -852,7 +853,8 @@ export default function InterestClaims() {
           </button>
         </div>
       </div>
-      {/* Source Data from Firebase Button */}
+      {/* Next Button with Info */}
+      <div className="flex gap-2 items-center justify-start">
         <Button
           onClick={async () => {
             if (!dataType) {
@@ -899,10 +901,23 @@ export default function InterestClaims() {
             }
           }}
           disabled={!dataType || firebaseLoading}
-          className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+          size="sm"
+          className="bg-green-600 hover:bg-green-700 text-white px-6"
         >
-          {firebaseLoading ? "Loading..." : "Source data from Firebase"}
+          {firebaseLoading ? "Loading..." : "Next"}
         </Button>
+        <Button
+          variant="outline"
+          size="icon"
+          onClick={() => {
+            alert("📋 Data Availability Info:\n\n❌ Equity trades are currently not available\n✅ FX trades are available\n\n📖 Instructions:\n1. Click on 'FX Claims' button above\n2. Then click the 'Next' button to load and process FX trade data");
+          }}
+          className="shrink-0"
+          title="Data availability information"
+        >
+          <Info className="h-4 w-4" />
+        </Button>
+      </div>
       {/* File Upload Area */}
       <div
         className="border-2 border-dashed border-teal-300 rounded-lg p-8 text-center hover:border-teal-400 transition-colors cursor-pointer"
@@ -1603,7 +1618,7 @@ export default function InterestClaims() {
               }
             }}
           >
-            Upload As-Is to Firebase (All Columns)
+            Upload
           </Button>
           <Button
             className="bg-blue-600 hover:bg-blue-700 text-white"
@@ -1611,7 +1626,7 @@ export default function InterestClaims() {
             title="This will only upload mapped fields, not all columns. Use 'Upload As-Is' for all columns."
             disabled={uploadedData.length === 0}
           >
-            Save to Firebase (Mapped Fields Only)
+            Save
           </Button>
         </div>
       </div>
@@ -2244,42 +2259,6 @@ export default function InterestClaims() {
                 </CardContent>
               </Card>
 
-              {/* Additional Actions Card */}
-              <Card>
-                <CardHeader>
-                  <CardTitle>Bulk Actions</CardTitle>
-                  <CardDescription>Perform bulk actions on multiple claims at once</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant="outline"
-                      className="border-green-500 text-green-600 hover:bg-green-50 bg-transparent"
-                    >
-                      <CheckCircle className="h-4 w-4 mr-2" />
-                      Approve Selected
-                    </Button>
-                    <Button variant="outline" className="border-blue-500 text-blue-600 hover:bg-blue-50 bg-transparent">
-                      <FileText className="h-4 w-4 mr-2" />
-                      Generate Reports
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="border-orange-500 text-orange-600 hover:bg-orange-50 bg-transparent"
-                    >
-                      <AlertCircle className="h-4 w-4 mr-2" />
-                      Flag for Review
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="border-purple-500 text-purple-600 hover:bg-purple-50 bg-transparent"
-                    >
-                      <Target className="h-4 w-4 mr-2" />
-                      Assign to Processor
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
             </div>
           )
         case "claim-registration":
@@ -2535,15 +2514,15 @@ export default function InterestClaims() {
 
                   {/* Expected PnL Input */}
                   <Card className="border-orange-200">
-                    <CardHeader>
-                      <CardTitle className="text-lg text-orange-700">PnL Mismatch Configuration</CardTitle>
-                      <CardDescription>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm text-orange-700">PnL Mismatch Configuration</CardTitle>
+                      <CardDescription className="text-xs">
                         Enter the expected PnL value to identify trades with PnL deviations greater than ±5%
                       </CardDescription>
                     </CardHeader>
-                    <CardContent>
-                      <div className="flex items-center space-x-4">
-                        <label htmlFor="expected-pnl" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    <CardContent className="pt-2">
+                      <div className="flex items-center space-x-3 text-sm">
+                        <label htmlFor="expected-pnl" className="text-xs font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">
                           Expected PnL Value:
                         </label>
                         <input
@@ -2551,10 +2530,10 @@ export default function InterestClaims() {
                           type="number"
                           value={expectedPnlValue}
                           onChange={(e) => setExpectedPnlValue(Number(e.target.value) || 0)}
-                          placeholder="Enter expected PnL amount"
-                          className="px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                          placeholder="0"
+                          className="px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-orange-500 focus:border-orange-500 w-24"
                         />
-                        <span className="text-sm text-gray-500">
+                        <span className="text-xs text-gray-500">
                           Trades with PnL deviation &gt; ±5% will be flagged as "PnL Mismatch"
                         </span>
                       </div>
@@ -2874,42 +2853,6 @@ export default function InterestClaims() {
                 </CardContent>
               </Card>
 
-              {/* Bulk Registration Actions */}
-              <Card>
-                <CardHeader>
-                  <CardTitle>Bulk Registration Actions</CardTitle>
-                  <CardDescription>Perform bulk actions on multiple claims for registration</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant="outline"
-                      className="border-green-500 text-green-600 hover:bg-green-50 bg-transparent"
-                    >
-                      <CheckCircle className="h-4 w-4 mr-2" />
-                      Register Selected Claims
-                    </Button>
-                    <Button variant="outline" className="border-blue-500 text-blue-600 hover:bg-blue-50 bg-transparent">
-                      <FileText className="h-4 w-4 mr-2" />
-                      Generate Registration Report
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="border-orange-500 text-orange-600 hover:bg-orange-50 bg-transparent"
-                    >
-                      <AlertCircle className="h-4 w-4 mr-2" />
-                      Flag for Review
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="border-purple-500 text-purple-600 hover:bg-purple-50 bg-transparent"
-                    >
-                      <Target className="h-4 w-4 mr-2" />
-                      Assign to Processor
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
             </div>
           )
         case "claim-issuance":
